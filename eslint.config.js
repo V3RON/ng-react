@@ -1,13 +1,10 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
-// Relative, not `@ng-react/eslint-config-modules`: this file is loaded
-// directly by Node when ESLint reads the flat config, and only packages
-// listed as dependencies of *this* package.json get a node_modules symlink
-// at the workspace root — adding one is outside this task's declared root
-// edits (vitest.config.ts and eslint.config.js only, per AGENTS.md §7). The
-// relative import needs no such change and resolves identically. This is
-// also ADR-4 made concrete: B1/B3 land as this preset, not as Nx tags.
-import ngReactModules from './packages/eslint-config-modules/src/index.js';
+// Imported by package name, not by relative path, so this dogfoods the exact
+// resolution path real consumers use: the workspace `exports` map. Tasks 7.2
+// (generator) and 8.1 (demo modules) wire the preset in by name, and a broken
+// exports map would otherwise not surface until then.
+import ngReactModules from '@ng-react/eslint-config-modules';
 
 export default tseslint.config(
   {

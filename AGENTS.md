@@ -50,7 +50,14 @@ Additional packages arrive in later stages (`packages/eslint-config-modules`,
 | Test runner | **Vitest 4**, `globals: true` | |
 | Lint | ESLint 10 flat config + `typescript-eslint` 8 | |
 | Dead code | `fallow` 3 | `pnpm fallow` |
+| Boundary lint | `@ng-react/eslint-config-modules` (this repo) | Wired into root `eslint.config.js` **by package name**, so the workspace `exports` map is exercised. |
 | React | 19.2 — a **required** peer dependency of `@ng-react/kernel` | |
+
+> **`pnpm-workspace.yaml` has `allowBuilds: unrs-resolver: true`.** `unrs-resolver` is the
+> native resolver behind `eslint-plugin-import-x`, which backs `import-x/no-cycle` (B3).
+> pnpm will not run its postinstall build without this approval, and without the build,
+> `pnpm lint` fails outright with `node with invalid interface loaded as resolver`. It is a
+> dev-only transitive dependency. Do not remove the entry.
 
 ### Commands (always run from the repo root)
 
