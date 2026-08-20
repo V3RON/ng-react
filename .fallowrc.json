@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  "entry": [
+    "packages/ng-react/src/index.ts",
+    "apps/react/src/main.tsx",
+    "apps/react/vite.config.ts",
+    "vitest.config.ts",
+    "eslint.config.js"
+  ],
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/coverage/**",
+    "**/*.test.ts",
+    "**/*.test.tsx"
+  ],
+  "rules": {
+    "unused-files": "error",
+    "unused-exports": "warn",
+    "unused-types": "off"
+  }
+}

@@ -1,0 +1,51 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# test / coverage
+coverage/
+.vitest/
+
+# caches
+.turbo/
+.cache/
+.eslintcache
+.fallow/
+
+# vite
+.vite/
+apps/*/dist/
+
+# editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# os
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# env
+.env
+.env.*
+!.env.example
+
+# claude worktrees
+.claude/worktrees/
+
+# stray tsc output at project roots
+apps/*/vite.config.d.ts
+apps/*/vite.config.d.ts.map
