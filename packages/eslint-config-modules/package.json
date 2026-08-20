@@ -1,0 +1,27 @@
+{
+  "name": "@ng-react/eslint-config-modules",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "description": "ESLint flat-config preset enforcing spec 01 §13 (B1-B3) module boundaries: contract-only cross-module imports, contract export allowlist, and override/transient backstops. ADR-4: this is the tooling implementation of B1/B3, not Nx tags.",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "main": "./src/index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit --pretty"
+  },
+  "peerDependencies": {
+    "eslint": "^10.0.0"
+  },
+  "dependencies": {
+    "@typescript-eslint/utils": "^8.67.0",
+    "eslint-plugin-import-x": "^4.17.1"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "^8.67.0",
+    "@typescript-eslint/rule-tester": "^8.67.0"
+  }
+}
