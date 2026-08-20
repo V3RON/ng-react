@@ -25,6 +25,9 @@ export {
   UnknownModuleError,
   InvalidDescriptorError,
   DeadContextError,
+  DuplicateProviderError,
+  ProviderKindConflictError,
+  DuplicateRegistrationError,
 } from './errors';
 
 // module-ref.ts — module value identities (M1-M3).

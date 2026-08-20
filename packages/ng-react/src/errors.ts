@@ -141,3 +141,69 @@ export class DeadContextError extends KernelError {
     this.name = 'DeadContextError';
   }
 }
+
+/**
+ * C6: two `provide()` calls for one token are a registration-time fatal
+ * error naming both providing modules (via provenance, C9 — provenance is
+ * never self-reported). `existingOwner` is the module that already holds the
+ * token; `newOwner` is the module whose registration was rejected.
+ *
+ * Message is spec-mandated verbatim (issue #11, task 2.1):
+ *
+ *   Token 'orders/OrderService' is already provided by 'orders'; 'billing' cannot provide it again. Use provide(token, { override: true, ... }) in the composition root or a test if this is intentional.
+ */
+export class DuplicateProviderError extends KernelError {
+  constructor(tokenLabel: string, existingOwner: string, newOwner: string) {
+    super(
+      'CONTAINER_DUPLICATE_PROVIDER',
+      `Token '${tokenLabel}' is already provided by '${existingOwner}'; '${newOwner}' cannot provide it again. ` +
+        `Use provide(token, { override: true, ... }) in the composition root or a test if this is intentional.`,
+      { moduleId: newOwner },
+    );
+    this.name = 'DuplicateProviderError';
+  }
+}
+
+/**
+ * C5: `provide` on a token that already has contributions, or `contribute`
+ * on a token that was `provide`d, is a registration-time error. Names the
+ * token, every module already registered against it together with the kind
+ * it used, and the module + kind of the new, conflicting registration.
+ */
+export class ProviderKindConflictError extends KernelError {
+  constructor(
+    tokenLabel: string,
+    existingKind: 'provide' | 'contribute',
+    existingOwners: readonly string[],
+    newKind: 'provide' | 'contribute',
+    newOwner: string,
+  ) {
+    const owners = existingOwners.map((owner) => `'${owner}'`).join(', ');
+    super(
+      'CONTAINER_PROVIDER_KIND_CONFLICT',
+      `Token '${tokenLabel}': ${owners} registered it via ${existingKind}(), but '${newOwner}' is trying to ` +
+        `${newKind}() it. provide() and contribute() cannot be mixed for the same token.`,
+      { moduleId: newOwner },
+    );
+    this.name = 'ProviderKindConflictError';
+  }
+}
+
+/**
+ * Registering the same module id twice without an intervening
+ * `ProviderRegistry.withdraw()` is an error: the kernel guarantees
+ * single-flight activation (A2), so a second registration for a module id
+ * that is still registered indicates a bug, not a legitimate re-activation.
+ * HMR re-activation (H2) withdraws before it re-registers.
+ */
+export class DuplicateRegistrationError extends KernelError {
+  constructor(moduleId: string) {
+    super(
+      'CONTAINER_DUPLICATE_REGISTRATION',
+      `Module '${moduleId}' is already registered with the container. Call withdraw('${moduleId}') before ` +
+        `registering it again — e.g. before an HMR re-activation.`,
+      { moduleId },
+    );
+    this.name = 'DuplicateRegistrationError';
+  }
+}
