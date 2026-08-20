@@ -28,6 +28,10 @@ export {
   DuplicateProviderError,
   ProviderKindConflictError,
   DuplicateRegistrationError,
+  ResolutionError,
+  CircularDependencyError,
+  ProviderFactoryError,
+  DisposeTimeoutError,
 } from './errors';
 
 // module-ref.ts — module value identities (M1-M3).

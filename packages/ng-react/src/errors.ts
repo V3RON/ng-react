@@ -207,3 +207,101 @@ export class DuplicateRegistrationError extends KernelError {
     this.name = 'DuplicateRegistrationError';
   }
 }
+
+/**
+ * C8: a resolution failed because no provider is registered for a token
+ * somewhere along the chain. `path` is every token label from the one the
+ * requester originally asked for down to the one that failed, in order (a
+ * single-element path means the top-level token itself had no provider).
+ *
+ * When the failing token's label prefix (before the first `/`) names a
+ * module the registry knows about but that is missing from the requester's
+ * `dependsOn`, `suggestion` carries that fact and is appended to the
+ * message verbatim.
+ *
+ * Message is spec-mandated verbatim (§7.2, C8), e.g. for
+ * `path = ['orders/OrderService', 'payments/PaymentGateway']` with a
+ * suggestion of `{ missingModuleId: 'payments', requesterId: 'orders' }`:
+ *
+ *   Cannot resolve orders/OrderService → payments/PaymentGateway: no provider. 'payments' is registered but not listed in dependsOn of 'orders'.
+ */
+export class ResolutionError extends KernelError {
+  readonly path: readonly string[];
+
+  constructor(
+    path: readonly string[],
+    suggestion?: { readonly missingModuleId: string; readonly requesterId: string },
+  ) {
+    const base = `Cannot resolve ${path.join(' → ')}: no provider.`;
+    const message =
+      suggestion === undefined
+        ? base
+        : `${base} '${suggestion.missingModuleId}' is registered but not listed in dependsOn of ` +
+          `'${suggestion.requesterId}'.`;
+    super('CONTAINER_NO_PROVIDER', message, { moduleId: suggestion?.requesterId });
+    this.name = 'ResolutionError';
+    this.path = path;
+  }
+}
+
+/**
+ * §7.3: the container supports no circular resolution of any kind — no lazy
+ * proxies, no forward refs. `cyclePath` is the distinct token labels
+ * involved, in resolution order; the message repeats the first at the end
+ * to show closure of the loop (same convention as `DependencyCycleError`,
+ * G1).
+ *
+ * Message, e.g. for `cyclePath = ['orders/OrderService', 'orders/Repo']`:
+ *
+ *   Circular dependency while resolving orders/OrderService: orders/OrderService → orders/Repo → orders/OrderService.
+ */
+export class CircularDependencyError extends KernelError {
+  readonly cyclePath: readonly string[];
+
+  constructor(cyclePath: readonly string[]) {
+    const first = cyclePath[0];
+    if (first === undefined) {
+      throw new Error('CircularDependencyError requires a non-empty cyclePath');
+    }
+    const path = [...cyclePath, first].join(' → ');
+    super('CONTAINER_CIRCULAR_DEPENDENCY', `Circular dependency while resolving ${first}: ${path}.`);
+    this.name = 'CircularDependencyError';
+    this.cyclePath = cyclePath;
+  }
+}
+
+/**
+ * A provider factory threw while being constructed. The original error is
+ * preserved as `cause` — never swallowed — while the message still carries
+ * the full resolution path (same join format as `ResolutionError`/C8), so
+ * the chain that led to the failing factory is never lost.
+ */
+export class ProviderFactoryError extends KernelError {
+  readonly path: readonly string[];
+
+  constructor(path: readonly string[], cause: unknown) {
+    super('CONTAINER_FACTORY_THREW', `Cannot resolve ${path.join(' → ')}: factory threw.`, { cause });
+    this.name = 'ProviderFactoryError';
+    this.path = path;
+  }
+}
+
+/**
+ * ADR-1: async disposal (a `dispose()`/`onDispose()` that returns a
+ * promise) is awaited with a timeout (default 2 s, `disposeTimeoutMs`). On
+ * timeout the instance is still marked disposed and this error is handed to
+ * the resolver's `onError` callback (routing to the kernel's error sinks,
+ * F4, lands in stage 3) naming the owning module and the token whose
+ * disposal did not complete in time.
+ */
+export class DisposeTimeoutError extends KernelError {
+  constructor(moduleId: string, tokenLabel: string, timeoutMs: number) {
+    super(
+      'CONTAINER_DISPOSE_TIMEOUT',
+      `Disposing '${tokenLabel}' (owned by '${moduleId}') did not complete within ${timeoutMs}ms. ` +
+        `The instance is marked disposed regardless; the dispose call may still be running in the background.`,
+      { moduleId },
+    );
+    this.name = 'DisposeTimeoutError';
+  }
+}
