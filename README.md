@@ -8,6 +8,7 @@ or hierarchical injectors.
 - `apps/react` — Vite + React 19 demo and acceptance app.
 - `docs/spec/01-kernel-and-module-system.md` — the normative spec.
 - [AGENTS.md](AGENTS.md) — ground truth for contributors: toolchain, conventions, ADRs.
+- [HANDOFF.md](HANDOFF.md) — current status, decisions made, and known traps.
 
 ```bash
 pnpm install
