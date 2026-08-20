@@ -83,7 +83,7 @@ export const OrdersModule = moduleRef('orders');
 
 ### 5.2 Descriptor
 
-The descriptor is created with `defineModule` and is the complete kernel-facing surface of a module. It has exactly six fields; each future addition is a permanent contract and requires justification against principle 1.
+The descriptor is created with `defineModule` and is the complete kernel-facing surface of a module. It has exactly seven fields; each future addition is a permanent contract and requires justification against principle 1.
 
 ```ts
 // @app/orders — src/module.ts
@@ -289,3 +289,41 @@ The event bus implementation and typed event map (spec 02 — this spec only req
 2. `MODULE_ID` propagation for resolutions started outside any module (composition root, app-level UI): a reserved `app` id, or `undefined` with `optional()` semantics?
 3. `persistent: true` transfer semantics (H4): structural copy of a plain-object state snapshot vs a user-supplied `transfer(oldState) => newState` function. Leaning: snapshot by default, optional transfer function for migrations between edits.
 4. Monorepo tooling baseline (pnpm workspaces + turbo vs Nx) — affects how B1/B3 are implemented but nothing in the kernel API.
+
+---
+
+## 17. Decisions recorded during implementation
+
+Resolutions of §16 and of discrepancies found while implementing. The full rationale for
+each lives in `AGENTS.md` under the matching ADR id; this section is the spec-side record
+that §16 asks for.
+
+- **§16 Q1 — async `dispose`** → awaited with a **2 s timeout** (`disposeTimeoutMs`), since
+  HMR correctness depends on teardown completing. On timeout the module is still marked
+  `disposed` and the timeout is routed to the error sinks (F4). See ADR-1.
+- **§16 Q2 — `MODULE_ID` outside any module** → the reserved id **`'app'`**, not
+  `undefined`. `moduleRef('app')` is a fatal error, so the id cannot collide. `MODULE_ID`
+  therefore never resolves to `undefined` and consumers need no `optional()` dance.
+  See ADR-2.
+- **§16 Q3 — `persistent: true` transfer** → **snapshot by default**, with an optional
+  user-supplied `transfer(oldInstance, newInstance)` for migrations between edits.
+  Resolution order: `transfer` → `snapshot()`/`restore()` → structural copy of own
+  enumerable properties → warn and keep the fresh instance. Never throws. See ADR-3.
+- **§16 Q4 — monorepo tooling** → **pnpm workspaces**, no Nx, no Turbo. B1/B3 are
+  implemented as an ESLint preset plus package `exports` maps rather than Nx tags.
+  See ADR-4.
+
+Discrepancies found in this document and how they were resolved:
+
+- **§5.2 field count** — the prose said "exactly six fields" while the worked example
+  below it lists seven (`id`, `dependsOn`, `load`, `critical`, `providers`, `init`,
+  `dispose`). Revision 2 removed `capabilities` and `contributions` without updating the
+  count. **Corrected to seven** in §5.2 above; the example was always the executable
+  contract. See ADR-9.
+- **§5.2 / D1 `require` thunks** — the descriptor examples use CommonJS
+  `require('./providers')` for lazy evaluation. The implementation is ESM-only, so thunks
+  are typed `() => T | Promise<T>` and the blessed form is
+  `providers: () => import('./providers').then(m => m.providers)`. The D1 guarantee is
+  unchanged. See ADR-7.
+- **§11 Metro `module.hot`** — abstracted behind an `HmrAdapter` interface so the kernel
+  stays bundler-agnostic and React Native ready. See ADR-5.

@@ -192,6 +192,15 @@ synchronous or return a promise.** `providers`, `init` and `dispose` are all
 is the blessed ESM form. The D1 guarantee (no implementation evaluated before activation)
 is unchanged and is what acceptance criterion 9 verifies.
 
+**ADR-9 — The descriptor has seven fields, not six.** Spec §5.2's prose says "It has
+exactly six fields", but the worked example directly below it — and every other field list
+in the spec — has **seven**: `id`, `dependsOn`, `load`, `critical`, `providers`, `init`,
+`dispose`. The prose is stale: Revision 2's changelog records `capabilities` and
+`contributions` being removed from that list, and the count was evidently not updated. The
+executable example wins. **Seven is the contract**; an eighth field is the rejected case in
+§9 below. `defineModule` validates against exactly these seven and names them in its
+unknown-field error. Do not "fix" the count in either direction.
+
 **ADR-8 — Naming.** Public package is `@ng-react/kernel`; module id strings in the demo
 app use the bare feature name (`auth`, `orders`) per spec §4. Token labels are
 `moduleId/Name` (C1).
