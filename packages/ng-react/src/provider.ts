@@ -149,6 +149,30 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
   }
   const deps = validateDeps(kind, label, rawDeps);
 
+  // C3 / principle 6: catch the case ResolvedDeps' `unknown[]` constraint cannot — a
+  // `deps` array shorter than what `factory` actually requires. Explicit non-empty `deps`
+  // already gets this from the type checker (ResolvedDeps<D> fixes factory's parameter
+  // list), but `deps` omitted or `deps: []` type-checks against a niladic factory type
+  // that TypeScript does not enforce strictly enough to reject extra required parameters
+  // (see the PR discussion on task 1.2). `Function.prototype.length` counts exactly the
+  // leading required positional parameters — defaults, rest, and destructuring all either
+  // reduce or don't inflate it — so this check is one-sided: it can only false-negative
+  // (miss a real mismatch hidden behind a default/rest/destructured parameter), never
+  // false-positive. A factory whose required arity exceeds deps.length is unconditionally
+  // a bug: the container calls factory with exactly one argument per dep, so the extra
+  // parameters silently receive `undefined`.
+  const arity = options.factory.length;
+  if (arity > deps.length) {
+    const first = deps.length + 1;
+    const range = first === arity ? `parameter ${arity}` : `parameters ${first}-${arity}`;
+    const pronoun = arity - deps.length === 1 ? 'it' : 'them';
+    throw new InvalidDescriptorError(
+      `${kind}(${label}): factory declares ${arity} required parameter${arity === 1 ? '' : 's'} but deps has ` +
+        `${deps.length} ${deps.length === 1 ? 'entry' : 'entries'}. The container calls factory with exactly ` +
+        `one argument per dep, so ${range} would be undefined. Did you forget to list ${pronoun} in deps?`,
+    );
+  }
+
   const override = options.override ?? false;
   if (typeof override !== 'boolean') {
     throw new InvalidDescriptorError(

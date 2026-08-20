@@ -104,6 +104,81 @@ describe('provider', () => {
     );
   });
 
+  it('C3: provide rejects a factory whose required arity exceeds deps.length', () => {
+    const dep = createToken<string>('orders/Dep');
+    let error: unknown;
+    try {
+      provide(createToken<string>('orders/OrderService'), {
+        deps: [dep],
+        // @ts-expect-error -- deliberately declaring more required parameters than deps
+        // provides, to exercise the runtime arity guard (C3) rather than the type checker.
+        factory: (a: string, b: string, c: string) => a + b + c,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(InvalidDescriptorError);
+    expect((error as InvalidDescriptorError).message).toBe(
+      'provide(orders/OrderService): factory declares 3 required parameters but deps has 1 entry. ' +
+        'The container calls factory with exactly one argument per dep, so parameters 2-3 would be undefined. ' +
+        'Did you forget to list them in deps?',
+    );
+  });
+
+  it('C3: provide rejects a factory whose required arity exceeds deps.length when deps is omitted entirely', () => {
+    // No `@ts-expect-error` here: with `deps` omitted (as opposed to an explicit `deps: []`
+    // or non-empty `deps`), TypeScript does not constrain factory's parameter list tightly
+    // enough to reject this at compile time — the narrower gap this runtime guard closes.
+    let error: unknown;
+    try {
+      provide(createToken<string>('orders/OrderService'), {
+        factory: (http: unknown, storage: unknown, cache: unknown) => `${http}${storage}${cache}`,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(InvalidDescriptorError);
+    expect((error as InvalidDescriptorError).message).toBe(
+      'provide(orders/OrderService): factory declares 3 required parameters but deps has 0 entries. ' +
+        'The container calls factory with exactly one argument per dep, so parameters 1-3 would be undefined. ' +
+        'Did you forget to list them in deps?',
+    );
+  });
+
+  it('C3: provide accepts a factory with default, rest or destructured parameters', () => {
+    const token = createToken<string>('orders/OrderService');
+    const countDep = createToken<number>('orders/Count');
+    const shapedDep = createToken<{ a: number }>('orders/Shaped');
+
+    // Default parameter: Function.prototype.length excludes params after the first with an
+    // initializer. Explicit type argument to keep TS from widening D by inferring a second
+    // dep from the default value's type, which is unrelated to what this case demonstrates.
+    expect(() =>
+      provide<string, readonly [typeof countDep]>(token, {
+        deps: [countDep],
+        factory: (count: number, extra = 'x') => `${count}${extra}`,
+      }),
+    ).not.toThrow();
+
+    // Rest parameter: Function.prototype.length excludes it entirely.
+    expect(() =>
+      provide(token, {
+        deps: [],
+        factory: (...rest: unknown[]) => String(rest.length),
+      }),
+    ).not.toThrow();
+
+    // Destructured parameter: counts as exactly one required parameter.
+    expect(() =>
+      provide(token, {
+        deps: [shapedDep],
+        factory: ({ a }: { a: number }) => String(a),
+      }),
+    ).not.toThrow();
+  });
+
   it('provide(): accepts optional() and allOf() wrapped deps alongside plain tokens', () => {
     const a = createToken<string>('orders/A');
     const b = createToken<number>('orders/B');
@@ -207,11 +282,14 @@ describe('provider', () => {
   it('type-level: an explicit empty deps array requires a niladic factory', () => {
     const token = createToken<string>('orders/Value');
     provide(token, { deps: [], factory: () => 'value' });
-    provide(token, {
-      deps: [],
-      // @ts-expect-error -- deps: [] means factory must take zero parameters.
-      factory: (extra: string) => extra,
-    });
+    expect(() =>
+      provide(token, {
+        deps: [],
+        // @ts-expect-error -- deps: [] means factory must take zero parameters. Also rejected
+        // at runtime by the arity guard (C3), which is what this now throws on.
+        factory: (extra: string) => extra,
+      }),
+    ).toThrow(InvalidDescriptorError);
   });
 
   it('type-level: ProviderOptions.factory receives ResolvedDeps<D> positionally', () => {
