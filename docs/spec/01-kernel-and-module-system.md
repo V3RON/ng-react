@@ -325,5 +325,11 @@ Discrepancies found in this document and how they were resolved:
   are typed `() => T | Promise<T>` and the blessed form is
   `providers: () => import('./providers').then(m => m.providers)`. The D1 guarantee is
   unchanged. See ADR-7.
+- **§7.2 worked example did not type-check** — a heterogeneous `providers` array
+  (`[provide(OrderServiceToken, …), contribute(AnalyticsSinkToken, …)]`) has no common
+  supertype, because both `Token<T>` and `ProviderRecord<T>` are invariant in `T`. Fixed
+  with two erased aliases, `AnyToken` and `AnyProviderRecord`, confining `any` to those two
+  declarations. The spec's examples are now transcribed as executable regression tests in
+  `packages/ng-react/src/spec-examples.test.ts`. See ADR-10.
 - **§11 Metro `module.hot`** — abstracted behind an `HmrAdapter` interface so the kernel
   stays bundler-agnostic and React Native ready. See ADR-5.

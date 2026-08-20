@@ -71,6 +71,28 @@ export interface ProviderRecord<T = unknown> {
   readonly [PROVIDER_RECORD_BRAND]: true;
 }
 
+/**
+ * A `ProviderRecord` with its value type erased — the element type of a
+ * module's `providers` array and of every collection the container holds.
+ *
+ * ADR-10. `ProviderRecord<T>` is invariant in `T` twice over: `Token<T>`'s
+ * brand is invariant, and `onDispose(instance: T)` / `transfer(old: T, new: T)`
+ * put `T` in contravariant position. So the spec's own §7.2 worked example —
+ * `[provide(OrderServiceToken, ...), contribute(AnalyticsSinkToken, ...)]` —
+ * has type `(ProviderRecord<OrderService> | ProviderRecord<AnalyticsSink>)[]`
+ * and is assignable to no `ProviderRecord<unknown>[]`. Erasing with `any` is
+ * the containment: it is confined to this alias and `AnyToken`, and every
+ * public API that consumes a record is generic in `T`, recovering the precise
+ * type from the token it is handed.
+ *
+ * The known cost: an `AnyProviderRecord` can be re-narrowed to a concrete
+ * `ProviderRecord<X>` without complaint. Acceptable, because records are
+ * opaque values — nothing reads `T` off a record; the container always
+ * re-derives it from the token passed to `resolve`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyProviderRecord = ProviderRecord<any>;
+
 /** Renders a value for an error message: `string 'storage'`, `number 42`, `null`, `array`, … */
 function describeValue(value: unknown): string {
   if (value === null) {

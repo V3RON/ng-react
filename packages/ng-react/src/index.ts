@@ -32,11 +32,11 @@ export type { ModuleRef } from './module-ref';
 export { moduleRef, isModuleRef } from './module-ref';
 
 // token.ts — injection tokens and dependency-declaration wrappers (C1, C4).
-export type { Token, OptionalDep, AllOfDep, Dep, Resolved, ResolvedDeps } from './token';
+export type { Token, AnyToken, OptionalDep, AllOfDep, Dep, Resolved, ResolvedDeps } from './token';
 export { createToken, isToken, optional, allOf, MODULE_ID } from './token';
 
 // provider.ts — provider declaration API (C2, C3, C5, C6, C7, ADR-3).
-export type { ProviderOptions, ProviderRecord } from './provider';
+export type { ProviderOptions, ProviderRecord, AnyProviderRecord } from './provider';
 export { provide, contribute } from './provider';
 
 // define-module.ts — module descriptor declaration API (D1-D4).

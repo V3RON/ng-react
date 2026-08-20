@@ -9,7 +9,7 @@
 import { InvalidDescriptorError } from './errors';
 import { isModuleRef } from './module-ref';
 import type { ModuleRef } from './module-ref';
-import type { ProviderRecord } from './provider';
+import type { AnyProviderRecord } from './provider';
 import type { LoadStrategy, ModuleContext } from './types';
 
 const DEFAULT_LOAD: LoadStrategy = 'lazy';
@@ -37,7 +37,7 @@ export interface ModuleDescriptor<Id extends string = string> {
   readonly dependsOn: readonly ModuleRef[];
   readonly load: LoadStrategy;
   readonly critical: boolean;
-  readonly providers?: () => ProviderRecord[] | Promise<ProviderRecord[]>;
+  readonly providers?: () => AnyProviderRecord[] | Promise<AnyProviderRecord[]>;
   readonly init?: (ctx: ModuleContext) => void | Promise<void>;
   readonly dispose?: (ctx: ModuleContext) => void | Promise<void>;
 }
@@ -48,7 +48,7 @@ export interface DefineModuleInput<Id extends string = string> {
   readonly dependsOn?: readonly ModuleRef[];
   readonly load?: LoadStrategy;
   readonly critical?: boolean;
-  readonly providers?: () => ProviderRecord[] | Promise<ProviderRecord[]>;
+  readonly providers?: () => AnyProviderRecord[] | Promise<AnyProviderRecord[]>;
   readonly init?: (ctx: ModuleContext) => void | Promise<void>;
   readonly dispose?: (ctx: ModuleContext) => void | Promise<void>;
 }

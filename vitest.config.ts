@@ -5,6 +5,8 @@ export default defineConfig({
   test: {
     // Projects legitimately start empty and fill in stage by stage.
     passWithNoTests: true,
+    // Never pick up tests from live agent worktrees under .claude/worktrees/.
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],
     projects: [
       {
         // Pure kernel tests: no DOM, no React renderer.

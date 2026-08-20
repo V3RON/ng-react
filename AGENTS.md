@@ -192,6 +192,30 @@ synchronous or return a promise.** `providers`, `init` and `dispose` are all
 is the blessed ESM form. The D1 guarantee (no implementation evaluated before activation)
 is unchanged and is what acceptance criterion 9 verifies.
 
+**ADR-10 — Type erasure for heterogeneous provider/token collections.** `Token<T>` is
+invariant in `T` (its brand puts `T` in both co- and contravariant position), and
+`ProviderRecord<T>` is invariant twice over — via its token and via
+`onDispose(instance: T)` / `transfer(old: T, new: T)`. Consequence: a heterogeneous
+`providers` array has **no** common supertype expressible with `unknown`, so the spec's own
+§7.2 worked example did not compile. Two erased aliases fix it:
+
+```ts
+export type AnyToken = Token<any>;                    // token.ts
+export type AnyProviderRecord = ProviderRecord<any>;  // provider.ts
+```
+
+`any` is the standard existential-type escape hatch and is **confined to these two
+aliases**. Every public API that accepts a token or a record stays generic in `T` and
+recovers the precise type from its argument, so `any` never reaches a consumer. Use
+`AnyProviderRecord` for any collection of records (descriptor `providers`, registry
+storage, container internals) and `AnyToken` for type-erased map keys. Do not "fix" these
+by substituting `unknown` — that is the bug, and `packages/ng-react/src/spec-examples.test.ts`
+will fail if you try.
+
+The accepted cost: an erased record can be re-narrowed to a concrete `ProviderRecord<X>`
+without complaint. Harmless, because records are opaque — nothing reads `T` off a record;
+the container re-derives it from the token passed to `resolve`.
+
 **ADR-9 — The descriptor has seven fields, not six.** Spec §5.2's prose says "It has
 exactly six fields", but the worked example directly below it — and every other field list
 in the spec — has **seven**: `id`, `dependsOn`, `load`, `critical`, `providers`, `init`,
@@ -240,7 +264,9 @@ app use the bare feature name (`auth`, `orders`) per spec §4. Token labels are
 ## 8. Coding standards
 
 - **TypeScript strict**, `noUncheckedIndexedAccess` on. No `any` in exported signatures;
-  `unknown` plus a narrowing helper instead.
+  `unknown` plus a narrowing helper instead. The **only** sanctioned exceptions are the
+  two erased aliases in ADR-10, each carrying a single scoped `eslint-disable-next-line`.
+  Adding a third requires the same standard of justification as a new descriptor field.
 - `import type { … }` for type-only imports (`consistent-type-imports` is an error).
 - No decorators. No `reflect-metadata`. No runtime reflection of function parameter names.
   Dependencies are always explicit token arrays (principle 3).
@@ -264,3 +290,6 @@ app use the bare feature name (`auth`, `orders`) per spec §4. Token labels are
 - Two ways to do the same thing (principle 5).
 - `npm install` / `yarn` — pnpm only.
 - Snapshot tests standing in for behavioural assertions on error messages.
+- Transcribing a spec code block into a test with the types weakened (`Token<unknown>`
+  everywhere, empty arrays) so it passes. That is how the ADR-10 defect survived stage 1.
+  Worked examples get realistic, *differently*-typed values or they prove nothing.

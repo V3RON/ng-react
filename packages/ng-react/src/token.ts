@@ -54,6 +54,22 @@ export interface AllOfDep<T> {
   readonly [ALL_OF_DEP_BRAND]: true;
 }
 
+/**
+ * A `Token` with its value type erased — the form heterogeneous collections
+ * and type-erased internals (the registry's maps, `AnyProviderRecord`) hold.
+ *
+ * ADR-10. `Token<T>` is deliberately invariant in `T`, so `Token<Cat>` is
+ * assignable to neither `Token<Animal>` nor `Token<unknown>`, and a
+ * collection of differently-typed tokens has **no** common supertype
+ * expressible with `unknown`. `any` is the standard existential-type escape
+ * hatch for exactly this situation, and it is contained to this one alias
+ * and to `AnyProviderRecord`. Consumers never see it: every public API that
+ * accepts a token is generic in `T` and recovers the precise type from its
+ * argument.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyToken = Token<any>;
+
 /** Anything that may appear in a provider's `deps` array. */
 export type Dep<T = unknown> = Token<T> | OptionalDep<T> | AllOfDep<T>;
 
