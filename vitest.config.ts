@@ -40,6 +40,22 @@ export default defineConfig({
           globals: true,
         },
       },
+      {
+        // @ng-react/eslint-config-modules rule tests (stage 7, task 7.1).
+        // node env: these are ESLint RuleTester suites, no DOM involved.
+        // `globals: true` is load-bearing here, not cosmetic: RuleTester
+        // (from @typescript-eslint/rule-tester) defaults its test-framework
+        // hooks to whatever `describe`/`it`/`afterAll` exist on globalThis
+        // when it isn't told otherwise — that's the "Vitest adapter" this
+        // task's issue asks for, not a separate integration shim.
+        test: {
+          name: 'eslint-config',
+          root: './packages/eslint-config-modules',
+          environment: 'node',
+          include: ['src/**/*.test.ts'],
+          globals: true,
+        },
+      },
     ],
     coverage: {
       provider: 'v8',
