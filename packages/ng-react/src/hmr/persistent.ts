@@ -1,81 +1,59 @@
-// **H3 / H4 / ADR-3 — persistent stores and the transfer that carries them
-// across an HMR re-activation.**
-//
-// Two things live here, and they are deliberately not one thing:
-//
-//  1. `transferPersistentState` — ADR-3's four-branch resolution order,
-//     called by the resolver the moment it constructs a fresh instance for a
-//     `persistent: true` provider whose predecessor is still held.
-//  2. `defineStore` — the blessed *pattern carrier* H3 names. It is not a
-//     state library and must not grow into one; its whole job is to be the
-//     smallest object that satisfies ADR-3 branch 2 and that stage 7's
-//     generator can emit verbatim.
-//
-// ADR-6: `src/hmr/` is not `src/react/` — no `react` import here, not even a
-// type. `defineStore`'s `subscribe` is shaped for `useSyncExternalStore`
-// (subscribe + a referentially stable `getState`) without depending on it.
-
 import { PersistentTransferError } from '../errors';
 import type { AnyProviderRecord } from '../provider';
 import type { ErrorReporter, Unsubscribe } from '../types';
 
 /**
- * The minimal state carrier H3 blesses (`defineStore`'s return type).
+ * A minimal observable state container whose contents survive a hot reload.
  *
- * Five members, and the list is closed. `getState`/`setState`/`subscribe`
- * are what a consumer uses; `snapshot`/`restore` are what **ADR-3 branch 2**
- * duck-types against, which is the entire reason a store is preferable to a
- * bare object for durable state. There is no `reset`, no selector, no
- * middleware and no equality option — every one of those would be scope
- * creep in a file whose purpose is to make one pattern copyable.
+ * `getState`/`setState`/`subscribe` are the consumer surface;
+ * `snapshot`/`restore` are what `transferPersistentState` duck-types against
+ * to carry state onto the replacement instance.
  */
 export interface Store<S> {
-  /** The current state. Referentially stable until the next `setState`/`restore`. */
+  /** Returns the current state. Referentially stable until the next `setState` or `restore`. */
   getState(): S;
   /** Replaces the state, either outright or from the previous value, then notifies. */
   setState(next: S | ((previous: S) => S)): void;
   /**
-   * Calls `listener` after every state change. Does not fire on subscribe —
-   * the same rule as every other subscription in this package (C5, A2, H6):
-   * read the current value with `getState`. The returned `Unsubscribe` is
-   * idempotent.
+   * Calls `listener` after every state change.
+   *
+   * Does not fire on subscribe — read the current value with `getState`. The
+   * returned `Unsubscribe` is idempotent.
    */
   subscribe(listener: () => void): Unsubscribe;
-  /** **ADR-3 branch 2**: the state to carry across an HMR re-activation. */
+  /** Returns the state to carry across a hot reload. */
   snapshot(): S;
-  /** **ADR-3 branch 2**: adopts a snapshot taken before the re-activation, then notifies. */
+  /** Adopts a snapshot taken before a hot reload, then notifies. */
   restore(snapshot: S): void;
 }
 
-/** One live `subscribe` registration — same shape, same reasons, as `epoch.ts`'s. */
+/** One live `subscribe` registration. */
 interface StoreSubscription {
   readonly notify: () => void;
   active: boolean;
 }
 
 /**
- * **H3**: creates the blessed durable-state carrier.
+ * Creates a `Store` holding `initial`.
  *
- * The pattern it exists to make copyable: durable state lives in a
- * `singleton`-scoped (or `persistent: true`) provider whose instance *is* a
- * store, never in a module closure. Spec §11 H3 is blunt about the
- * alternative — "closure state is lost on every edit by design".
+ * Put durable state in a provider whose instance is a store, not in a module
+ * closure: closure state is discarded on every edit, while a
+ * `persistent: true` provider's store survives one. `restore` notifies like
+ * `setState`, so a component holding the store re-renders with the
+ * carried-over state as soon as the reload completes.
  *
+ * @example
  * ```ts
- * provide(CartToken, { persistent: true, factory: () => defineStore({ items: [] as CartLine[] }) })
+ * provide(CartToken, {
+ *   persistent: true,
+ *   factory: () => defineStore({ items: [] as CartLine[] }),
+ * });
  * ```
- *
- * `restore` notifies exactly like `setState`, which is what makes a
- * component holding the store re-render with the carried-over state after an
- * HMR cycle rather than showing the factory's initial value until the next
- * unrelated update.
  */
 export function defineStore<S>(initial: S): Store<S> {
   let state = initial;
   const subscriptions = new Set<StoreSubscription>();
 
-  // Iterates a copy and honours `active`: a listener that subscribes or
-  // unsubscribes in response must not affect the pass in flight.
   const notify = (): void => {
     for (const subscription of [...subscriptions]) {
       if (subscription.active) {
@@ -109,57 +87,50 @@ export function defineStore<S>(initial: S): Store<S> {
   };
 }
 
-/** Everything `transferPersistentState` needs, from the one caller that has it. */
+/** Options for `transferPersistentState`. */
 export interface PersistentTransferOptions {
   /** The **new** record — `transfer` is read off the replacement provider, not the old one. */
   readonly record: AnyProviderRecord;
-  /** The instance held back from the previous activation (H4's sole exception). */
+  /** The instance held back from the previous activation. */
   readonly oldInstance: unknown;
   /** The instance the factory just constructed. Mutated in place, or left alone. */
   readonly newInstance: unknown;
-  /** C9: the module that owns the provider — kernel-assigned, for attribution. */
+  /** The module that owns the provider, for error attribution. */
   readonly moduleId: string;
-  /** F4: where branch 4's warning goes. Never throws back into this function. */
+  /** Where a failed transfer is reported. */
   readonly report: ErrorReporter;
 }
 
 /**
- * **ADR-3**: carries `oldInstance`'s state onto `newInstance`, trying four
- * strategies in order and **never throwing**.
+ * Carries `oldInstance`'s state onto `newInstance`, trying four strategies in
+ * order. Never throws.
  *
  *  1. `record.transfer(oldInstance, newInstance)`, if the provider declares
- *     one. Called and stopped on — a hand-written transfer is a migration
- *     between two shapes of state and no fallback can second-guess it.
- *  2. `oldInstance.snapshot()` structured-cloned into `newInstance.restore()`,
- *     if both members are functions. This is the branch `defineStore` exists
- *     to satisfy.
+ *     one. No fallback runs after it.
+ *  2. `oldInstance.snapshot()` structured-cloned into
+ *     `newInstance.restore()`, if both members are functions — the `Store`
+ *     shape.
  *  3. A structured clone of `oldInstance`'s own enumerable properties
- *     assigned onto `newInstance`, if both are plain objects. "Plain" is
- *     `Object.prototype` or a null prototype: a class instance is excluded
- *     on purpose, because copying fields past a constructor's invariants is
- *     how you get an object that looks restored and behaves corrupted.
- *  4. Otherwise — and on *any* failure of 1-3 — a `PersistentTransferError`
- *     goes to the error sinks (F4) and `newInstance` is left exactly as its
- *     factory built it.
+ *     assigned onto `newInstance`, if both have `Object.prototype` or a null
+ *     prototype. Class instances are excluded: copying fields past a
+ *     constructor's invariants produces an object that looks restored and
+ *     behaves corrupted.
+ *  4. Otherwise, and on any failure of 1-3, a `PersistentTransferError` goes
+ *     to the error sinks and `newInstance` is left as its factory built it.
  *
- * **Why the clone is the failure point, and why that is fine.**
- * `structuredClone` throws on functions, on class instances with private
- * fields, on DOM nodes and on symbols. A store whose state holds a callback
- * therefore lands in branch 4 rather than exploding mid-HMR-cycle, which is
- * exactly ADR-3's "never throw — a failed transfer must not break the HMR
- * cycle". The clone is not decoration either: without it the fresh instance
- * would share mutable structure with an instance from the *previous*
- * generation of the module's code, which is the aliasing bug HMR is
- * infamous for.
+ * The clone is what keeps the fresh instance from sharing mutable structure
+ * with the previous generation of the module's code. It is also the usual
+ * failure point: `structuredClone` rejects functions, class instances with
+ * private fields, DOM nodes and symbols, so state holding any of those lands
+ * in branch 4.
  */
 export function transferPersistentState(options: PersistentTransferOptions): void {
   const { record, oldInstance, newInstance, moduleId, report } = options;
   const tokenLabel = record.token.label;
 
   const fail = (reason: string, cause?: unknown): void => {
-    // F4 phase `resolve`: the transfer runs inside a resolution, as part of
-    // constructing the replacement instance. There is no `hmr` phase and
-    // adding one would widen a public union for a dev-only diagnostic.
+    // Phase `resolve`: the transfer runs inside a resolution, as part of
+    // constructing the replacement instance.
     report(new PersistentTransferError(moduleId, tokenLabel, reason, cause), {
       moduleId,
       phase: 'resolve',
@@ -177,7 +148,7 @@ export function transferPersistentState(options: PersistentTransferOptions): voi
     return;
   }
 
-  // Branch 2 — snapshot()/restore(), the `defineStore` shape.
+  // Branch 2 — snapshot()/restore(), the `Store` shape.
   const snapshot = readMethod(oldInstance, 'snapshot');
   const restore = readMethod(newInstance, 'restore');
   if (snapshot !== undefined && restore !== undefined) {
@@ -192,7 +163,7 @@ export function transferPersistentState(options: PersistentTransferOptions): voi
   // Branch 3 — own enumerable properties of two plain objects.
   if (isPlainObject(oldInstance) && isPlainObject(newInstance)) {
     try {
-      // Cloned *before* anything is written, so a clone failure leaves
+      // Cloned before anything is written, so a clone failure leaves
       // `newInstance` untouched rather than half-copied.
       const clone = structuredCloneOrThrow({ ...oldInstance });
       Object.assign(newInstance, clone);
@@ -233,10 +204,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * `structuredClone`, with a legible failure for the hosts that do not have
- * it. Node >= 22 and every current browser do; Hermes historically did not,
- * and the kernel has to run there (ADR-5's whole point). The caller treats a
- * throw here exactly like a clone failure — branch 4.
+ * `structuredClone`, with a legible failure on hosts that do not have it
+ * (older Hermes, for one). The caller treats that throw like any other clone
+ * failure.
  */
 function structuredCloneOrThrow<T>(value: T): T {
   const clone = (globalThis as { structuredClone?: (input: T) => T }).structuredClone;

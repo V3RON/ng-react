@@ -1,27 +1,7 @@
-// **R2 / R3 / H6** — the three consumer hooks: `useService`,
-// `useServiceAll`, `useModule` (plus `useServiceOptional`).
-//
-// Every one of them is a `useSyncExternalStore` over a kernel subscription,
-// which is what makes them correct under React 18/19 concurrent rendering:
-// a store read during a transition cannot tear, and StrictMode's
-// mount/unmount/remount is safe because every kernel `Unsubscribe` in this
-// package is idempotent and every `subscribe` is symmetric.
-//
-// **The one rule that governs this file**: `getSnapshot` runs on *every*
-// render, not only after a notification, so it must return a referentially
-// stable value or React re-renders forever. Two consequences:
-//
-//  - `useService`/`useServiceOptional` snapshot the **epoch number**, never
-//    the resolved instance, and re-resolve in a `useMemo` keyed by it. A
-//    number is stable by construction; a `transient` provider snapshotted
-//    directly would be a fresh object on every call — an instant loop.
-//  - `useServiceAll` caches the collection array and replaces it only when
-//    the contribution set actually changed. C5 already promises that a
-//    value-equal collection does not *notify*, but that is not enough on
-//    its own: nothing stops React from calling `getSnapshot` between
-//    notifications, and a fresh `getAll()` array each time would loop.
-//
-// ADR-6: `src/react/**` is the only place that may import `react`.
+// Every hook here is a `useSyncExternalStore` over a kernel subscription.
+// React calls `getSnapshot` on every render, not only after a notification,
+// so each one must return a referentially stable value: a fresh object or
+// array from `getSnapshot` re-renders forever.
 
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { useKernelContext, useModuleScope } from './context';
@@ -32,13 +12,8 @@ import type { AnyToken, Token } from '../token';
 import type { ModuleStatus, Unsubscribe } from '../types';
 
 /**
- * Dev-only gate for the transient warning (R2). Same probe as
- * `kernel.ts`'s `DEV_BY_DEFAULT`: read through `globalThis`, because
- * `process` may not exist at all in a browser or under React Native.
- *
- * Deliberately *not* `kernel.dev`: `dev` is a field on the internal
- * `KernelImpl`, not on the public `Kernel` interface, and widening that
- * interface for a `console.warn` is not a trade this task should make.
+ * Dev-only gate for the transient warning. Read through `globalThis`
+ * because `process` may not exist in a browser or under React Native.
  */
 const IS_DEV: boolean =
   (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[
@@ -46,57 +21,31 @@ const IS_DEV: boolean =
   ] !== 'production';
 
 /**
- * **H6**: subscribes to the resolution epoch of `moduleId` and returns its
- * current value.
+ * Subscribes to the resolution epoch of `moduleId` and returns its current
+ * value.
  *
- * `moduleId` is the **provider's owning module** (`kernel.ownerOf`), per
- * H6 — not the consuming component's module scope. A component in `orders`'
- * screen holding a `payments`-owned instance must re-render when *payments*
- * reloads, and `payments` is the module whose epoch moves.
- *
- * `undefined` subscribes to the global epoch. That is the honest fallback
- * when the token has no single owning module — nothing provides it yet
- * (`useServiceOptional`), or it is a contribution token, for which
- * `ownerOf` is `undefined` by design. A superset of the right
- * notifications; never a missed one.
+ * @param moduleId The module that *owns the provider*, not the consuming
+ *   component's scope — a component holding a `payments`-owned instance must
+ *   re-render when `payments` reloads. `undefined` subscribes to the global
+ *   epoch, a superset of the notifications a token with no single owner
+ *   needs.
  */
 function useEpoch(kernel: Kernel, moduleId: string | undefined): number {
   const subscribe = useCallback(
     (onStoreChange: () => void): Unsubscribe => kernel.subscribeEpoch(moduleId, onStoreChange),
     [kernel, moduleId],
   );
-  // A number: referentially stable by construction, so `getSnapshot` can be
-  // called on every render (and as the server snapshot) without looping.
   const getSnapshot = useCallback((): number => kernel.epochOf(moduleId), [kernel, moduleId]);
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 /**
- * **R2**: emits the transient `console.warn`, at most once per token per
- * `<AppKernel>`.
+ * Warns, in dev only, when a component resolves a `transient` provider. At
+ * most once per token per `<AppKernel>`.
  *
- * Spec §12 R2 makes "`transient` in components" a *lint* warning, and
- * `ng-react-modules/no-transient-in-component` (already merged, #28) is
- * that rule. This is not a second way to do the same thing: that rule
- * documents, at the top of its own source, that it can only flag a
- * `useService(Token)` whose `provide(Token, { scope: 'transient' })` is in
- * the *same file* — which in real code it almost never is. The runtime
- * check sees the registry, so it catches exactly the cross-file case static
- * analysis cannot, and it names the blessed alternative rather than just
- * complaining.
- *
- * In an effect, not in render: render must stay free of side effects under
- * concurrent rendering, and `kernel.inspect()` is far too expensive to run
- * on every render of every consumer. `warnedTransientTokens` is the
- * `<AppKernel>`-scoped set from `context.tsx` — see the note there on why
- * this must not be module-level state.
- *
- * Scope lookup goes through `inspect()` because that is the only public
- * surface carrying a provider's scope, and its rows are keyed by the
- * token's *label*. Narrowing by `owner` first (from `ownerOf`, which is
- * token-identity keyed) makes a false positive need two distinct tokens
- * with the same label provided by the same module — and the cost of one
- * would be a spurious dev warning, never a behaviour change.
+ * Runs in an effect rather than in render: `kernel.inspect()` is too
+ * expensive for every render, and render must stay side-effect free under
+ * concurrent rendering.
  */
 function useTransientWarning(
   kernel: Kernel,
@@ -135,22 +84,28 @@ function useTransientWarning(
 }
 
 /**
- * **R2**: resolves `token` through the kernel's container, on behalf of the
- * module owning the enclosing `<ModuleScope>` (ADR-2's `'app'` outside any).
+ * Resolves `token`, on behalf of the module owning the enclosing
+ * `<ModuleScope>` (or `'app'` outside any), and re-renders when that
+ * provider's module is hot-reloaded.
  *
- * **Referential stability** for `singleton` and `module` scopes comes from
- * the container's own instance cache, not from the `useMemo` below — C2
- * says one instance per app lifetime / per activation, so two calls in two
- * renders are `Object.is`-identical whether or not React kept the memo. The
- * memo exists to make the *epoch* a dependency (H6), so a re-activation
- * re-resolves.
+ * `singleton`- and `module`-scoped instances are referentially stable across
+ * renders. Resolution errors reach the caller unwrapped, so the container's
+ * full resolution chain and `dependsOn` suggestion survive into the render
+ * failure.
  *
- * **C8 errors reach the caller unchanged.** There is no `try` on this path:
- * a failed resolution throws the container's `ResolutionError` verbatim,
- * message and all, out of the component's render. That message — the full
- * resolution chain plus the `dependsOn` suggestion — is the whole point of
- * C8, and a binding that wrapped it in "failed to resolve service" would
- * destroy the feature.
+ * @throws {KernelError} When called outside an `<AppKernel>`.
+ * @throws {ResolutionError} When no provider is registered for `token`. Use
+ *   `useServiceOptional` when a missing provider is expected.
+ * @throws {ProviderFactoryError} When a factory in the resolution chain
+ *   throws.
+ *
+ * @example
+ * ```tsx
+ * function CartBadge() {
+ *   const cart = useService(CartToken);
+ *   return <span>{cart.count}</span>;
+ * }
+ * ```
  */
 export function useService<T>(token: Token<T>): T {
   const { kernel, warnedTransientTokens } = useKernelContext('useService');
@@ -158,23 +113,22 @@ export function useService<T>(token: Token<T>): T {
   const owner = kernel.ownerOf(token);
   const epoch = useEpoch(kernel, owner);
   useTransientWarning(kernel, token, owner, warnedTransientTokens);
-  // `epoch` is a dependency, not an input: H6's re-resolution is exactly
-  // "throw away the memo when the owning module reloads".
+  // `epoch` is a dependency, not an input: it discards the memo when the
+  // owning module reloads.
   return useMemo(() => kernel.get(token, requester), [kernel, token, requester, epoch]);
 }
 
 /**
- * **R2**: `useService` for a token that may have no provider — `undefined`
- * instead of a C8 error.
+ * `useService` for a token that may have no provider: returns `undefined`
+ * instead of throwing.
  *
- * "No provider" is decided with `kernel.ownerOf`, which is the *same*
- * registry check `optional(token)` performs (§7.3), so this hook and
- * `deps: [optional(token)]` can never disagree. It follows that an error
- * thrown by a factory that *was* found still propagates: only the
- * found-or-not question is optional here.
+ * Only the found-or-not question is optional — a factory that is found and
+ * throws still propagates. Agrees with `deps: [optional(token)]` on what
+ * counts as present, `MODULE_ID` included.
  *
- * `MODULE_ID` is the one contextual token with no registry entry, and
- * `optional(MODULE_ID)` still yields the requester; this hook matches.
+ * @throws {KernelError} When called outside an `<AppKernel>`.
+ * @throws {ProviderFactoryError} When a factory in the resolution chain
+ *   throws.
  */
 export function useServiceOptional<T>(token: Token<T>): T | undefined {
   const { kernel, warnedTransientTokens } = useKernelContext('useServiceOptional');
@@ -192,13 +146,8 @@ export function useServiceOptional<T>(token: Token<T>): T | undefined {
 /**
  * Per-hook-instance cache behind `useServiceAll`.
  *
- * `getSnapshot` hands back the *same array* until the contribution set
- * actually changes. `refresh` is the single place that decides "changed",
- * and it compares element-wise: C5's notification is already suppressed for
- * a value-equal collection, so the comparison is belt-and-braces — but it
- * is what makes `subscribe` able to catch up on changes missed while
- * unsubscribed (StrictMode unmounts and remounts) *without* handing React a
- * fresh, equal array and forcing a pointless re-render.
+ * `getSnapshot` must hand back the *same array* until the contribution set
+ * actually changes; a fresh array on each call re-renders forever.
  */
 function createCollectionStore<T>(kernel: Kernel, token: Token<T>) {
   let snapshot: readonly T[] | undefined;
@@ -219,10 +168,9 @@ function createCollectionStore<T>(kernel: Kernel, token: Token<T>) {
       return snapshot;
     },
     subscribe(onStoreChange: () => void): Unsubscribe {
-      // Catch up first: between an unsubscribe and the next subscribe (a
-      // StrictMode remount, or a token/kernel change) notifications are not
-      // delivered, so a stale cached array would survive. Value-equal
-      // results keep the existing reference.
+      // Catch up first: no notifications arrive between an unsubscribe and
+      // the next subscribe (a StrictMode remount, or a token/kernel change),
+      // so a stale cached array would otherwise survive.
       if (snapshot !== undefined) {
         refresh(kernel.getAll(token));
       }
@@ -235,7 +183,7 @@ function createCollectionStore<T>(kernel: Kernel, token: Token<T>) {
   };
 }
 
-/** Element-wise identity comparison — C5 collections are ordered (topological). */
+/** Element-wise identity comparison. Contribution collections are ordered. */
 function sameContributions<T>(a: readonly T[], b: readonly T[]): boolean {
   if (a === b) {
     return true;
@@ -247,22 +195,21 @@ function sameContributions<T>(a: readonly T[], b: readonly T[]): boolean {
 }
 
 /**
- * **R3**: the full reactive contribution collection for `token` (C5), in
- * module topological order, re-rendering when the contribution set changes
- * — module activation, disposal, or F3 quarantine.
+ * Returns the full contribution collection for `token`, in module
+ * topological order, re-rendering whenever the contribution set changes —
+ * module activation, disposal, quarantine, or a hot replace.
  *
- * This is the render-side primitive spec 03 is built on: the navigation
- * module's root navigator is, at its core, `useServiceAll(RouteConfigToken)`.
+ * The returned array is referentially stable while the collection is
+ * unchanged, so it is safe as a hook dependency.
  *
- * **No epoch subscription, and that is deliberate — see the PR body.** H6's
- * wording ("subscribe to the epoch of the provider's module") has no
- * meaning for a collection: it has N owners, `ownerOf` returns `undefined`
- * for a contribution token by design, and the set of owners is itself what
- * changes. `subscribeAll` already covers the case H6 exists for, exactly: a
- * module re-activation is a `withdraw` followed by a `register`, both of
- * which mutate the contribution records and therefore notify, and the
- * replacement records resolve to the fresh instances. Adding an epoch
- * subscription on top would be a second, weaker path to the same signal.
+ * @throws {KernelError} When called outside an `<AppKernel>`.
+ *
+ * @example
+ * ```tsx
+ * const routes = useServiceAll(RouteConfigToken);
+ * // [{ path: 'orders', screen: OrdersScreen }, { path: 'cart', screen: CartScreen }]
+ * return <>{routes.map((route) => <Route key={route.path} {...route} />)}</>;
+ * ```
  */
 export function useServiceAll<T>(token: Token<T>): readonly T[] {
   const { kernel } = useKernelContext('useServiceAll');
@@ -270,36 +217,40 @@ export function useServiceAll<T>(token: Token<T>): readonly T[] {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 }
 
-/** **R3**: what `useModule` reports about one module. */
+/** What `useModule` reports about one module. */
 export interface ModuleState {
-  /** A2: the module's current lifecycle state. */
+  /** The module's current lifecycle state. */
   readonly status: ModuleStatus;
   /**
-   * F1: the retained failure of a `failed` module, as the kernel describes
-   * it in `inspect()` (`{ name, message, code }`). `unknown` because a
-   * consumer should render it, not branch on it.
+   * The retained failure of a `failed` module, as `inspect()` describes it
+   * (`{ name, message, code }`). Absent unless the module failed.
    */
   readonly error?: unknown;
-  /** F3: re-attempts activation from a clean slate. Referentially stable. */
+  /**
+   * Re-attempts activation from a clean slate. Referentially stable, and
+   * safe to pass straight to a `<button>`.
+   *
+   * A failed retry re-quarantines the module and surfaces in `status` and
+   * `error` rather than rejecting.
+   */
   readonly retry: () => void;
 }
 
 /**
- * **R3**: `ref`'s status, its retained failure, and F3's `retry`,
- * re-rendering on every status transition.
+ * Returns `ref`'s status, its retained failure, and a `retry`, re-rendering
+ * on every status transition.
  *
- * **This hook does not trigger activation**, and must not: spec §6 says
- * activation is explicit (`kernel.activate`) or dependency-driven, and the
- * kernel deliberately has no other trigger. A `lazy` module observed
- * through `useModule` stays `registered` until something activates it —
- * rendering a status indicator is not a reason to start a module.
+ * Observing a module does not activate it: a `lazy` module watched through
+ * this hook stays `registered` until something calls `kernel.activate` or a
+ * dependent pulls it in.
  *
- * `retry` is `useCallback`-stable across renders (it closes over nothing
- * that changes), so a consumer may pass it straight to a `<button>` without
- * re-rendering the subtree on every status change. It discards the promise
- * `kernel.retry` returns: a retry that fails re-quarantines the module,
- * reports through the F4 sinks and shows up in `status` — rethrowing into
- * an unhandled rejection would add nothing and crash the app.
+ * @throws {KernelError} When called outside an `<AppKernel>`.
+ *
+ * @example
+ * ```tsx
+ * const { status, error, retry } = useModule(OrdersModule);
+ * if (status === 'failed') return <Retry error={error} onRetry={retry} />;
+ * ```
  */
 export function useModule(ref: ModuleRef): ModuleState {
   const { kernel } = useKernelContext('useModule');
@@ -308,15 +259,13 @@ export function useModule(ref: ModuleRef): ModuleState {
     (onStoreChange: () => void): Unsubscribe => kernel.subscribeStatus(ref, onStoreChange),
     [kernel, ref],
   );
-  // A `ModuleStatus` is a string union — stable by construction.
   const getSnapshot = useCallback((): ModuleStatus => kernel.status(ref), [kernel, ref]);
   const status = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   const retry = useCallback((): void => {
     void kernel.retry(ref).catch(() => {
-      // Intentionally swallowed: see the doc comment. The failure is
-      // already retained (F1), routed to the error sinks (F4) and visible
-      // in `status`.
+      // Swallowed: the failure is already retained, routed to the error
+      // sinks and visible in `status`.
     });
   }, [kernel, ref]);
 
