@@ -1,16 +1,10 @@
 // `@app/payments/contract` — the module's public surface (spec §4).
 //
-// **B2**: a contract may export only types and interfaces, `createToken()`
-// calls, and **exactly one** `moduleRef()` call. No implementation values —
-// this file is importable by every other module in the workspace, and the
-// whole point of the split is that importing it evaluates nothing.
-// `@ng-react/eslint-config-modules`' `contract-exports-allowlist` rule
-// enforces that, verified by import provenance: a locally defined function
-// called `createToken` does not count.
+// **B2**: types, `createToken()` calls and exactly one `moduleRef()` call.
 //
-// **M1/M2**: the ref below is this module's value identity. Other modules
-// name it by importing it from here, so a typo is a compile error and "find
-// all references" on the ref lists every dependent (D3).
+// `payments` is **lazy** and depends on nothing. It is the module acceptance
+// criterion 1 watches activate *transitively*, because `orders` lists it in
+// `dependsOn` — the demo never calls `kernel.activate(PaymentsModule)`.
 
 import { createToken, moduleRef } from '@ng-react/kernel';
 import type { Store } from '@ng-react/kernel';
@@ -18,62 +12,40 @@ import type { Store } from '@ng-react/kernel';
 /** **M1/D2**: the module's identity. The one `moduleRef()` call in this file. */
 export const PaymentsModule = moduleRef('payments');
 
-/** Plain, immutable configuration — the shape a composition root or a test overrides. */
-export interface PaymentsSettings {
-  readonly enabled: boolean;
-  readonly maxRetries: number;
+/** Minor units in a single currency — enough arithmetic for a demo, no more. */
+export interface Money {
+  readonly amountMinor: number;
+  readonly currency: 'EUR' | 'USD';
 }
 
-/** One record this module owns. */
-export interface PaymentsRecord {
+/** A successful authorization, as the gateway reports it. */
+export interface Authorization {
   readonly id: string;
-  readonly label: string;
-}
-
-/** A not-yet-committed edit. Durable across HMR — see `PaymentsDraftsToken`. */
-export interface PaymentsDraft {
-  readonly id: string;
-  readonly text: string;
+  readonly amount: Money;
+  readonly authorizedFor: string;
 }
 
 /**
- * The remote edge of the module. Declared here so a test can replace it with
- * `provide(PaymentsGatewayToken, { override: true, … })` — spec §15
- * criterion 7's "activate with a mocked gateway" in this module's terms.
+ * The remote edge of the module — **the token acceptance criterion 5 deletes
+ * and criterion 7 mocks**, so it is deliberately the one thing `orders`
+ * resolves from here.
  */
-export interface PaymentsGateway {
-  fetch(id: string): Promise<PaymentsRecord>;
+export interface PaymentGateway {
+  authorize(amount: Money, reference: string): Promise<Authorization>;
 }
 
+/** A not-yet-submitted payment. Durable across HMR — see `PaymentDraftStoreToken`. */
+export interface PaymentDraft {
+  readonly reference: string;
+  readonly amount: Money;
+}
+
+/** **C1**: `moduleId/Name` labels (ADR-8); each call is a distinct identity. */
+export const PaymentGatewayToken = createToken<PaymentGateway>('payments/PaymentGateway');
 /**
- * The module's own service. It is also an emitter, so `ctx.on` (L2) has
- * something real to subscribe to without the kernel special-casing any bus
- * (spec 02's event bus is the other, later, case L2 must also fit).
+ * **H3**: the demo's persistent state. Its provider is `persistent: true`, so
+ * an HMR re-activation of `payments` carries the drafts onto the fresh
+ * instance (**H4**, ADR-3) while `kernel.deactivate` discards them.
  */
-export interface PaymentsService {
-  load(id: string): Promise<PaymentsRecord>;
-  on(event: string, handler: (record: PaymentsRecord) => void): void;
-  off(event: string, handler: (record: PaymentsRecord) => void): void;
-  /** **C7**: the container calls this when the owning module is disposed. */
-  dispose(): void;
-}
-
-/**
- * A short-lived unit of work. Its provider is `scope: 'transient'`, so **C7**
- * applies: the container never disposes it, and the blessed way to acquire
- * one is inside `ctx.effect` (see `lifecycle.ts`), never at the top level of
- * a component (**R2**).
- */
-export interface PaymentsSession {
-  flush(): Promise<void>;
-  close(): void;
-}
-
-/** **C1**: token labels are `moduleId/Name` (ADR-8). Each call is a distinct identity. */
-export const PaymentsSettingsToken = createToken<PaymentsSettings>('payments/Settings');
-export const PaymentsGatewayToken = createToken<PaymentsGateway>('payments/Gateway');
-export const PaymentsServiceToken = createToken<PaymentsService>('payments/Service');
-export const PaymentsSessionToken = createToken<PaymentsSession>('payments/Session');
-/** **H3**: durable state lives in a store, never in a module closure. */
-export const PaymentsDraftsToken =
-  createToken<Store<readonly PaymentsDraft[]>>('payments/Drafts');
+export const PaymentDraftStoreToken =
+  createToken<Store<readonly PaymentDraft[]>>('payments/PaymentDraftStore');

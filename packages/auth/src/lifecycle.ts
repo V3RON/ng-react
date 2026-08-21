@@ -5,21 +5,14 @@
 // disposables so teardown is structural; a hand-written `dispose` mirroring
 // `init` is an anti-pattern and should almost never exist." Everything `init`
 // registers below is registered *through* `ctx`, so **L3** tears it down in
-// reverse registration order with nothing to mirror. Add a `dispose` only for
-// teardown that `ctx` genuinely cannot express — and then say in a comment
-// what that is.
+// reverse registration order with nothing to mirror.
 //
 // **L4**: after teardown the `ctx` is dead. Do not close over it in anything
-// that can outlive the module; using a stale one throws, naming this module.
+// that can outlive the module.
 
 import { recordEvaluation } from '@ng-react/kernel';
 import type { ModuleContext } from '@ng-react/kernel';
-import {
-  AuthDraftsToken,
-  AuthServiceToken,
-  AuthSessionToken,
-} from './contract';
-import type { AuthRecord } from './contract';
+import { AuthErrorLogToken, SessionServiceToken } from './contract';
 
 // **Acceptance criterion 9** — see the same call in `providers.ts`.
 recordEvaluation('auth', 'auth/lifecycle.ts');
@@ -28,31 +21,31 @@ recordEvaluation('auth', 'auth/lifecycle.ts');
  * **L1/L2**: the module's only place for effects. `ctx.get` resolves with
  * this module as the resolution context (**C4**), so `MODULE_ID` inside every
  * factory reached from here is `'auth'`.
+ *
+ * `auth` is `critical: true`, so anything that throws here fails startup
+ * visibly (**F2**) — which is precisely the contrast the demo needs against
+ * `debug`, whose identical failure is quarantined.
  */
 export function init(ctx: ModuleContext): void {
-  const service = ctx.get(AuthServiceToken);
-  const drafts = ctx.get(AuthDraftsToken);
+  const session = ctx.get(SessionServiceToken);
 
-  // **L2**: sugar over `effect` for any subscribe/unsubscribe-shaped API.
-  // The service is an ordinary emitter here; the event bus (spec 02) fits the
-  // same signature without being special-cased.
-  ctx.on(service, 'auth/changed', (record: AuthRecord) => {
-    drafts.setState((current) => current.filter((draft) => draft.id !== record.id));
-  });
+  // **C3**: a provider is constructed on first resolution, and the error log
+  // must exist *before* the first error rather than on the first read — a
+  // sink that constructed its log lazily would drop nothing, but the demo's
+  // panel would show an empty log until something failed. Spec §7.2 C3 is
+  // explicit that "a provider that must run at activation regardless of
+  // consumers is not a provider — it is `init` code"; this is that line.
+  ctx.get(AuthErrorLogToken);
 
-  // **C7 — the blessed way to use a `transient`.** The container never
-  // disposes a transient instance, so its lifetime is the consumer's
-  // responsibility: acquire it inside `ctx.effect` and release it in the
-  // cleanup the effect returns. Resolving one at the top level of `init` (or
-  // of a component — **R2**) leaks it.
+  // **L2**: the demo starts signed in, so `orders` has a session to work
+  // against, and the effect's cleanup ends the session when `auth` is
+  // disposed. Logout in the UI is `kernel.deactivate(AuthModule)` (**A4**),
+  // so this cleanup is what makes "logged out" true of the service as well
+  // as of the kernel — structurally, with no hand-written `dispose`.
   ctx.effect(() => {
-    const session = ctx.get(AuthSessionToken);
-    const timer = setInterval(() => {
-      void session.flush();
-    }, 60_000);
+    session.login('demo-user');
     return () => {
-      clearInterval(timer);
-      session.close();
+      session.logout();
     };
   });
 }

@@ -3,21 +3,6 @@
 // This file is **implementation**: it is not exported from the package
 // (spec §4 gives a module package exactly two subpath exports), and it is
 // reached only through `module.ts`'s thunk, at activation (**D1**).
-//
-// Five declarations, each carrying one blessed pattern:
-//
-//  - `AuthSettingsToken` — a plain data provider, the thing a test or
-//    the composition root replaces with `override: true` (**C6**).
-//  - `AuthGatewayToken` — the module's remote edge, and the token the
-//    emitted test mocks.
-//  - `AuthServiceToken` — `scope: 'module'` (**C2**), with `MODULE_ID`
-//    among its deps (**C4**) and a `dispose()` the container calls when the
-//    module is disposed (**C7**).
-//  - `AuthDraftsToken` — `persistent: true` over `defineStore`
-//    (**H3**/**H4**, ADR-3): the one kind of state that survives an HMR
-//    re-activation of this module.
-//  - `ErrorSinkToken` — a `contribute` (**C5**), i.e. an append to a
-//    collection the kernel owns (**F4**), not a `provide`.
 
 import {
   contribute,
@@ -27,85 +12,54 @@ import {
   provide,
   recordEvaluation,
 } from '@ng-react/kernel';
-import type { AnyProviderRecord, ErrorInfo } from '@ng-react/kernel';
-import {
-  AuthDraftsToken,
-  AuthGatewayToken,
-  AuthServiceToken,
-  AuthSessionToken,
-  AuthSettingsToken,
-} from './contract';
-import type {
-  AuthDraft,
-  AuthGateway,
-  AuthRecord,
-  AuthService,
-  AuthSession,
-  AuthSettings,
-} from './contract';
+import type { AnyProviderRecord, ErrorInfo, Store, Unsubscribe } from '@ng-react/kernel';
+import { AuthErrorLogToken, DiagnosticPanelToken, SessionServiceToken } from './contract';
+import type { AuthErrorEntry, Session, SessionService } from './contract';
 
 // **Acceptance criterion 9**: records that this file was evaluated, so a test
 // can prove it was not evaluated before its module's activation trigger
 // (**D1**). A no-op when no test kernel is live.
 recordEvaluation('auth', 'auth/providers.ts');
 
-function createAuthGateway(settings: AuthSettings): AuthGateway {
-  return {
-    fetch: async (id) => {
-      if (!settings.enabled) {
-        throw new Error(`auth: disabled by settings, cannot fetch '${id}'.`);
-      }
-      return { id, label: `Auth ${id}` };
-    },
-  };
-}
+/** How many entries the demo's error log keeps. Bounded, like the kernel's own buffer. */
+const ERROR_LOG_LIMIT = 50;
 
-function createAuthService(
-  gateway: AuthGateway,
-  settings: AuthSettings,
-  requester: string,
-): AuthService {
-  const handlers = new Set<(record: AuthRecord) => void>();
+function createSessionService(): SessionService {
+  let session: Session | undefined;
+  const handlers = new Set<(next: Session | undefined) => void>();
+  const listeners = new Set<() => void>();
+
+  const emit = (): void => {
+    for (const handler of [...handlers]) {
+      handler(session);
+    }
+    for (const listener of [...listeners]) {
+      listener();
+    }
+  };
+
   return {
-    load: async (id) => {
-      let lastError: unknown;
-      for (let attempt = 0; attempt <= settings.maxRetries; attempt += 1) {
-        try {
-          const record = await gateway.fetch(id);
-          for (const handler of [...handlers]) {
-            handler(record);
-          }
-          return record;
-        } catch (error) {
-          lastError = error;
-        }
-      }
-      throw new Error(`auth: load('${id}') failed for '${requester}'.`, { cause: lastError });
+    login: (userId) => {
+      session = { userId, startedAt: Date.now() };
+      emit();
+      return session;
     },
+    logout: () => {
+      session = undefined;
+      emit();
+    },
+    current: () => session,
     on: (_event, handler) => {
       handlers.add(handler);
     },
     off: (_event, handler) => {
       handlers.delete(handler);
     },
-    // **C7**: the container invokes this when the module that owns the
-    // instance is disposed — module scope ends with the module's activation.
-    dispose: () => {
-      handlers.clear();
-    },
-  };
-}
-
-function openAuthSession(service: AuthService): AuthSession {
-  let open = true;
-  return {
-    flush: async () => {
-      if (open) {
-        await service.load('pending');
-      }
-    },
-    close: () => {
-      open = false;
+    subscribe: (listener): Unsubscribe => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }
@@ -117,62 +71,66 @@ function openAuthSession(service: AuthService): AuthSession {
  * both invariant in `T`. Do not "fix" this to `ProviderRecord<unknown>[]`.
  */
 export const providers: AnyProviderRecord[] = [
-  provide(AuthSettingsToken, {
-    // C2: `singleton` is the default scope and is what a value with no
-    // per-module identity wants.
-    factory: () => ({ enabled: true, maxRetries: 2 }),
+  provide(SessionServiceToken, {
+    // **C2 + §17 (#34)**: `singleton` here means one instance for as long as
+    // this module's providers are registered — deactivating `auth` on logout
+    // disposes it, and a later re-activation constructs exactly one new one.
+    // It is emphatically *not* "for the process lifetime": A4 and H2 make
+    // that untrue for a module-owned provider.
+    scope: 'singleton',
+    factory: () => createSessionService(),
   }),
 
-  provide(AuthGatewayToken, {
-    deps: [AuthSettingsToken],
-    factory: (settings) => createAuthGateway(settings),
-  }),
-
-  provide(AuthServiceToken, {
-    // C2: one instance per *activation* of this module — re-activation
-    // (A4, H2) constructs exactly one new one (§17, issue #34).
-    scope: 'module',
-    // **C4**: `MODULE_ID` resolves to the module on whose behalf the
-    // resolution chain was *started* — this module when its own `init` asks,
-    // ADR-2's reserved `'app'` when the composition root or `kernel.get()`
-    // does. It is the sanctioned way to specialise a service for its
-    // consumer; a module never passes its own id as a string.
-    deps: [AuthGatewayToken, AuthSettingsToken, MODULE_ID],
-    factory: (gateway, settings, requester) =>
-      createAuthService(gateway, settings, requester),
-  }),
-
-  provide(AuthSessionToken, {
-    // C2/C7: a new instance per resolution, and the container never disposes
-    // it — the consumer owns its lifetime. See `lifecycle.ts` for the
-    // blessed acquisition site.
-    scope: 'transient',
-    deps: [AuthServiceToken],
-    factory: (service) => openAuthSession(service),
-  }),
-
-  provide(AuthDraftsToken, {
-    // **H3/H4** (ADR-3): the instance is held back across an HMR
-    // re-activation of this module and its state transferred onto the fresh
-    // one via `snapshot()`/`restore()` — which is exactly what `defineStore`
-    // exists to provide. A real `deactivate` still throws the state away.
-    scope: 'module',
+  provide(AuthErrorLogToken, {
+    // **H3**: the error log is durable state, so it lives in a store rather
+    // than in a closure in this file. `persistent: true` carries it across an
+    // HMR re-activation of `auth` (**H4**, ADR-3) — editing this file must
+    // not silently erase the diagnostics the demo exists to show. A real
+    // `deactivate` still discards it, which is the difference H3 draws.
+    scope: 'singleton',
     persistent: true,
-    factory: () => defineStore<readonly AuthDraft[]>([]),
+    factory: (): Store<readonly AuthErrorEntry[]> => defineStore<readonly AuthErrorEntry[]>([]),
   }),
 
-  // **C5/F4**: `contribute`, not `provide` — this appends to a collection the
-  // kernel owns. `provide` on a contributed token is a registration-time
-  // error, and vice versa.
+  // **F4 — and the reason this sink lives in `auth` rather than in `debug`.**
+  //
+  // `debug` is the module that deliberately fails, so the obvious home for
+  // the sink that reports its failure is `debug` itself. That is exactly
+  // wrong: **F3** withdraws a quarantined module's providers *and its
+  // contributions*, so a sink contributed by `debug` would be withdrawn at
+  // the precise moment it was needed and the failure would be reported to
+  // nobody. The sink therefore lives in a separate, working module — this
+  // one, which is eager and critical and so is `ready` before `debug` even
+  // starts. A reader will get this wrong; that is why it is written down.
   contribute(ErrorSinkToken, {
-    deps: [MODULE_ID],
-    factory: (owner) => ({
-      // **C9**: `info.moduleId` is the kernel's attribution of the *failing*
-      // module, assigned at registration and never self-reported. `owner` is
-      // C4's resolution context — for a contribution, always its own owner
-      // (§17), so the two differ whenever another module is the one failing.
+    deps: [AuthErrorLogToken],
+    factory: (log) => ({
       report: (error: unknown, info: ErrorInfo) => {
-        console.error(`[${owner}] ${info.moduleId} failed during ${info.phase}:`, error);
+        const entry: AuthErrorEntry = {
+          // **C9**: `info.moduleId` is the kernel's attribution of the
+          // *failing* module, assigned at registration and never
+          // self-reported — so this sink, owned by `auth`, correctly records
+          // `'debug'` for `debug`'s quarantine.
+          moduleId: info.moduleId,
+          phase: info.phase,
+          message: error instanceof Error ? error.message : String(error),
+        };
+        log.setState((current) => [...current, entry].slice(-ERROR_LOG_LIMIT));
+      },
+    }),
+  }),
+
+  // **C5**: `contribute`, not `provide` — this appends to the collection
+  // declared in this module's own contract. `provide` on a contributed token
+  // is a registration-time error, and vice versa.
+  contribute(DiagnosticPanelToken, {
+    deps: [MODULE_ID, SessionServiceToken],
+    factory: (owner, session) => ({
+      moduleId: owner,
+      label: 'Session',
+      describe: () => {
+        const current = session.current();
+        return current === undefined ? 'signed out' : `signed in as ${current.userId}`;
       },
     }),
   }),

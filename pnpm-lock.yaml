@@ -53,6 +53,18 @@ importers:
 
   apps/react:
     dependencies:
+      '@app/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@app/debug':
+        specifier: workspace:*
+        version: link:../../packages/debug
+      '@app/orders':
+        specifier: workspace:*
+        version: link:../../packages/orders
+      '@app/payments':
+        specifier: workspace:*
+        version: link:../../packages/payments
       '@ng-react/kernel':
         specifier: workspace:*
         version: link:../../packages/ng-react
@@ -76,11 +88,26 @@ importers:
         specifier: ^8.2.2
         version: 8.2.2(@types/node@24.13.3)
 
+  packages/auth:
+    dependencies:
+      '@ng-react/kernel':
+        specifier: workspace:*
+        version: link:../ng-react
+
   packages/create-module:
     devDependencies:
       '@ng-react/eslint-config-modules':
         specifier: workspace:*
         version: link:../eslint-config-modules
+      '@ng-react/kernel':
+        specifier: workspace:*
+        version: link:../ng-react
+
+  packages/debug:
+    dependencies:
+      '@app/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@ng-react/kernel':
         specifier: workspace:*
         version: link:../ng-react
@@ -121,6 +148,27 @@ importers:
       react-dom:
         specifier: ^19.2.8
         version: 19.2.8(react@19.2.8)
+
+  packages/orders:
+    dependencies:
+      '@app/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@app/payments':
+        specifier: workspace:*
+        version: link:../payments
+      '@ng-react/kernel':
+        specifier: workspace:*
+        version: link:../ng-react
+
+  packages/payments:
+    dependencies:
+      '@app/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@ng-react/kernel':
+        specifier: workspace:*
+        version: link:../ng-react
 
 packages:
 

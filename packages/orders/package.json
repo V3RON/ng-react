@@ -12,6 +12,8 @@
     "typecheck": "tsc --noEmit --pretty"
   },
   "dependencies": {
+    "@app/auth": "workspace:*",
+    "@app/payments": "workspace:*",
     "@ng-react/kernel": "workspace:*"
   }
 }

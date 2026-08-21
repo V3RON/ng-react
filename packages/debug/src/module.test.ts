@@ -1,35 +1,38 @@
 // `@app/debug` — the module's own test, against `createTestKernel` (**R4**).
 //
-// R4 is the harness the spec names for exactly this: "activate a module with
-// mocked providers (via `override: true`), drive its lifecycle, dispose, and
-// assert via `kernel.inspect()` and H7-style leak counters that nothing
-// survived". It runs in a plain node environment with no React renderer —
-// acceptance criterion 7.
+// This module fails on purpose, so its test is the mirror image of the usual
+// one: it asserts **F1/F3** — the failure is retained, the registrations are
+// withdrawn, and nothing leaks despite `init` never completing.
 
 import { describe, expect, it } from 'vitest';
-import { createTestKernel, evaluationLog, provide } from '@ng-react/kernel';
+import { createTestKernel, evaluationLog } from '@ng-react/kernel';
 import type { Kernel, ModuleDescriptor, ModuleRef } from '@ng-react/kernel';
-import { DebugGatewayToken, DebugServiceToken, DebugModule } from './contract';
+import { DiagnosticPanelToken } from '@app/auth/contract';
+import { DebugModule, DebugProbeToken } from './contract';
 import { acceptHotUpdate, module } from './module';
 import type { ModuleHotContext } from './module';
 
+/**
+ * `debug`'s deliberate failure message, duplicated from `lifecycle.ts` rather
+ * than imported. Importing it would evaluate `lifecycle.ts` when this file
+ * loads — before any kernel exists — and the criterion 9 assertion below,
+ * which is the whole point of `recordEvaluation`, would silently lose its
+ * last entry. Duplication is the cheaper of the two costs.
+ */
+const DEBUG_INIT_FAILURE =
+  "debug: init failed on purpose so the demo can show F3's quarantine. " +
+  'The app must still start, and every other module must still be ready.';
+
 describe('debug module', () => {
-  it('D1 / criterion 9: nothing is evaluated until the activation trigger, then in order', async () => {
+  it('D1 / criterion 9: providers are evaluated, then init — which is where it throws', async () => {
     const kernel = createTestKernel({ modules: [module] });
     expect(kernel.status(DebugModule)).toBe('registered');
-
-    // Registration is cheap: the descriptor's static fields are readable
-    // without any implementation file having been evaluated.
     expect(evaluationLog(kernel)).toEqual([]);
 
-    await kernel.activate(DebugModule);
+    await expect(kernel.activate(DebugModule)).rejects.toThrow(DEBUG_INIT_FAILURE);
 
-    // This assertion is what makes the empty one above mean something. On its
-    // own, an empty log is also what you get from a `module.ts` that imported
-    // `./providers` at the top — that evaluation happens when *this test file*
-    // is loaded, before any kernel exists to record it. The full sequence
-    // below is not reproducible that way: it pins that each file was
-    // evaluated, and that each was evaluated *after* the trigger.
+    // The providers thunk ran to completion; `init` is the step that failed.
+    // That ordering is what gives F3 something real to withdraw.
     expect(evaluationLog(kernel).map((event) => event.file)).toEqual([
       '<activate>',
       '<providers>',
@@ -41,39 +44,57 @@ describe('debug module', () => {
     await kernel.dispose();
   });
 
-  it('R4: activates with a mocked gateway, behaves, and disposes without leaks', async () => {
-    const kernel = createTestKernel({
-      modules: [module],
-      // **C6**: the module's own plain `provide` for this token is superseded
-      // by the override rather than colliding with it (§17, issue #37), so
-      // mocking the gateway does not kill the module that provides it.
-      overrides: [
-        provide(DebugGatewayToken, {
-          factory: () => ({
-            fetch: async (id: string) => ({ id, label: 'mocked record' }),
-          }),
-        }),
-      ],
-    });
+  it('F1/F3: a failing init quarantines the module, withdrawing its providers and contributions', async () => {
+    const kernel = createTestKernel({ modules: [module] });
 
-    await kernel.activate(DebugModule);
-    expect(kernel.status(DebugModule)).toBe('ready');
+    // **F1**: an *explicit* `kernel.activate(ref)` rejects — the caller asked
+    // for this module, so it is told. What quarantine changes is the blast
+    // radius, not the answer to the asker: the startup eager pass swallows
+    // the same failure (see `apps/react/src/App.test.tsx`, which proves the
+    // app starts anyway), and the error is retained either way.
+    await expect(kernel.activate(DebugModule)).rejects.toThrow(DEBUG_INIT_FAILURE);
+    expect(kernel.status(DebugModule)).toBe('failed');
+    expect(kernel.inspect().modules.find((row) => row.id === 'debug')?.error?.message).toContain(
+      DEBUG_INIT_FAILURE,
+    );
 
-    const service = kernel.get(DebugServiceToken);
-    await expect(service.load('42')).resolves.toEqual({ id: '42', label: 'mocked record' });
+    // **F3**: providers withdrawn — the token has no owner at all, which is
+    // what quarantine means to a consumer.
+    expect(kernel.ownerOf(DebugProbeToken)).toBeUndefined();
+    // **F3 + C5**: and the contribution is gone from the reactive collection,
+    // which is how the demo's `useServiceAll` panel loses the row.
+    expect(kernel.getAll(DiagnosticPanelToken)).toEqual([]);
 
-    // C9: provenance is kernel-assigned, so `inspect()` attributes every
-    // provider above to this module.
-    const owners = new Set(kernel.inspect().providers.map((row) => row.owner));
-    expect([...owners]).toEqual(['debug']);
+    // **F4**: the failure reached the error sinks with the kernel's own
+    // attribution (**C9**) — `'debug'`, never self-reported.
+    expect(kernel.errors.map((entry) => entry.info.moduleId)).toContain('debug');
 
     await kernel.dispose();
+    // **F3/H7**: `init` threw *after* resolving a module-scoped instance and
+    // the quarantine still ran the cleanups and the disposal, so the residual
+    // is zero. This is the assertion that would fail if quarantine only
+    // withdrew registrations.
+    expect(kernel.leaks().balanced).toBe(true);
+  });
 
-    // **F4**: a module that logged a failure to the error sinks and still
-    // balanced its counters is not a passing example. Assert both.
-    expect(kernel.errors).toEqual([]);
-    // **H7**: every `ctx.on`, every `ctx.effect` and every module-scoped
-    // instance released by teardown.
+  it('F3: retry re-attempts activation from a clean slate — and fails again, by design', async () => {
+    const kernel = createTestKernel({ modules: [module] });
+    await expect(kernel.activate(DebugModule)).rejects.toThrow(DEBUG_INIT_FAILURE);
+    const failuresAfterFirst = kernel.errors.filter(
+      (entry) => entry.info.moduleId === 'debug',
+    ).length;
+
+    await expect(kernel.retry(DebugModule)).rejects.toThrow(DEBUG_INIT_FAILURE);
+
+    expect(kernel.status(DebugModule)).toBe('failed');
+    // A second, distinct report: `retry` really re-ran `init` rather than
+    // re-surfacing the retained error.
+    expect(kernel.errors.filter((entry) => entry.info.moduleId === 'debug').length).toBe(
+      failuresAfterFirst + 1,
+    );
+    expect(kernel.getAll(DiagnosticPanelToken)).toEqual([]);
+
+    await kernel.dispose();
     expect(kernel.leaks().balanced).toBe(true);
   });
 

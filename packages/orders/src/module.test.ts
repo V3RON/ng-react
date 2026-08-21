@@ -1,35 +1,86 @@
 // `@app/orders` — the module's own test, against `createTestKernel` (**R4**).
 //
-// R4 is the harness the spec names for exactly this: "activate a module with
-// mocked providers (via `override: true`), drive its lifecycle, dispose, and
-// assert via `kernel.inspect()` and H7-style leak counters that nothing
-// survived". It runs in a plain node environment with no React renderer —
-// acceptance criterion 7.
+// This is acceptance criterion 7 in this module's terms: "activate `orders`
+// with a mocked `payments/PaymentGateway`, run an `init`-registered listener,
+// dispose, and prove zero leaked listeners — in a plain Jest/Vitest
+// environment with no React renderer".
 
 import { describe, expect, it } from 'vitest';
-import { createTestKernel, evaluationLog, provide } from '@ng-react/kernel';
+import { createTestKernel, defineModule, evaluationLog, provide } from '@ng-react/kernel';
 import type { Kernel, ModuleDescriptor, ModuleRef } from '@ng-react/kernel';
-import { OrdersGatewayToken, OrdersServiceToken, OrdersModule } from './contract';
+import { AuthModule, DiagnosticPanelToken, SessionServiceToken } from '@app/auth/contract';
+import type { Session, SessionService } from '@app/auth/contract';
+import { PaymentGatewayToken, PaymentsModule } from '@app/payments/contract';
+import { OrderServiceToken, OrdersModule } from './contract';
 import { acceptHotUpdate, module } from './module';
 import type { ModuleHotContext } from './module';
 
+// **G2 + B1**: a `dependsOn` ref whose descriptor was never registered is a
+// fatal registration error, and this package may not import the real one —
+// `<pkg>/module` is reserved for the composition root. So each dependency is
+// stood up here as an empty descriptor built from the ref its *contract*
+// exports, which is the one thing this package is allowed to import (D3).
+// Give a dependency real behaviour through `overrides` (C6), never by
+// registering its actual descriptor: that would be testing it too.
+const dependencyStubs: ModuleDescriptor[] = [
+  defineModule({ id: AuthModule, dependsOn: [], load: 'lazy', critical: false }),
+  defineModule({ id: PaymentsModule, dependsOn: [], load: 'lazy', critical: false }),
+];
+
+/** A `SessionService` double whose emitter half is drivable from a test. */
+function fakeSessionService(): SessionService & { emit: () => void } {
+  let session: Session | undefined = { userId: 'test-user', startedAt: 0 };
+  const handlers = new Set<(next: Session | undefined) => void>();
+  return {
+    login: (userId) => (session = { userId, startedAt: 0 }),
+    logout: () => {
+      session = undefined;
+    },
+    current: () => session,
+    on: (_event, handler) => {
+      handlers.add(handler);
+    },
+    off: (_event, handler) => {
+      handlers.delete(handler);
+    },
+    subscribe: () => () => {},
+    emit: () => {
+      for (const handler of [...handlers]) {
+        handler(session);
+      }
+    },
+  };
+}
+
 describe('orders module', () => {
   it('D1 / criterion 9: nothing is evaluated until the activation trigger, then in order', async () => {
-    const kernel = createTestKernel({ modules: [module] });
+    // The overrides are not incidental here: `orders`' `init` resolves its
+    // own service, which resolves `payments/PaymentGateway`, and the stubs
+    // provide nothing. Without them this test would measure a *failed*
+    // activation's evaluation log, which is a different (and much weaker)
+    // claim than the one it makes.
+    const kernel = createTestKernel({
+      modules: [...dependencyStubs, module],
+      overrides: [
+        provide(PaymentGatewayToken, {
+          factory: () => ({
+            authorize: async (
+              amount: { amountMinor: number; currency: 'EUR' | 'USD' },
+              reference: string,
+            ) => ({ id: 'mock-authorization', amount, authorizedFor: reference }),
+          }),
+        }),
+        provide(SessionServiceToken, { factory: () => fakeSessionService() }),
+      ],
+    });
     expect(kernel.status(OrdersModule)).toBe('registered');
-
-    // Registration is cheap: the descriptor's static fields are readable
-    // without any implementation file having been evaluated.
     expect(evaluationLog(kernel)).toEqual([]);
 
     await kernel.activate(OrdersModule);
 
-    // This assertion is what makes the empty one above mean something. On its
-    // own, an empty log is also what you get from a `module.ts` that imported
-    // `./providers` at the top — that evaluation happens when *this test file*
-    // is loaded, before any kernel exists to record it. The full sequence
-    // below is not reproducible that way: it pins that each file was
-    // evaluated, and that each was evaluated *after* the trigger.
+    // **A1**: the two stubs activate first, in topological order, and neither
+    // evaluates an implementation file of its own — so the log below is
+    // `orders`' alone.
     expect(evaluationLog(kernel).map((event) => event.file)).toEqual([
       '<activate>',
       '<providers>',
@@ -41,40 +92,92 @@ describe('orders module', () => {
     await kernel.dispose();
   });
 
-  it('R4: activates with a mocked gateway, behaves, and disposes without leaks', async () => {
+  it('criterion 7: activates with a mocked PaymentGateway, runs the init listener, disposes clean', async () => {
+    const session = fakeSessionService();
     const kernel = createTestKernel({
-      modules: [module],
-      // **C6**: the module's own plain `provide` for this token is superseded
-      // by the override rather than colliding with it (§17, issue #37), so
-      // mocking the gateway does not kill the module that provides it.
+      modules: [...dependencyStubs, module],
+      // **C6**: `override: true`. The stubs provide nothing, so these are the
+      // only records for these tokens — but R4 re-declares every override as
+      // an override anyway, and §17 (#37) makes a plain `provide` that loses
+      // to one *superseded* rather than fatal, which is why mocking a
+      // dependency cannot kill the module that normally provides it.
       overrides: [
-        provide(OrdersGatewayToken, {
+        provide(PaymentGatewayToken, {
           factory: () => ({
-            fetch: async (id: string) => ({ id, label: 'mocked record' }),
+            authorize: async (amount: { amountMinor: number; currency: 'EUR' | 'USD' }, reference: string) => ({
+              id: 'mock-authorization',
+              amount,
+              authorizedFor: reference,
+            }),
           }),
         }),
+        provide(SessionServiceToken, { factory: () => session }),
       ],
     });
 
     await kernel.activate(OrdersModule);
     expect(kernel.status(OrdersModule)).toBe('ready');
 
-    const service = kernel.get(OrdersServiceToken);
-    await expect(service.load('42')).resolves.toEqual({ id: '42', label: 'mocked record' });
+    const service = kernel.get(OrderServiceToken);
+    await expect(service.place(2500)).resolves.toEqual({
+      id: 'test-user-1',
+      authorizationId: 'mock-authorization',
+      placedBy: 'test-user',
+    });
 
-    // C9: provenance is kernel-assigned, so `inspect()` attributes every
-    // provider above to this module.
-    const owners = new Set(kernel.inspect().providers.map((row) => row.owner));
-    expect([...owners]).toEqual(['orders']);
+    // **L2**: the listener `init` registered with `ctx.on` is live.
+    expect(service.sessionChanges()).toBe(0);
+    session.emit();
+    session.emit();
+    expect(service.sessionChanges()).toBe(2);
+
+    // C5: `orders` contributes one row, and it reports the live service.
+    expect(kernel.getAll(DiagnosticPanelToken).map((panel) => panel.describe())).toEqual([
+      '1 placed, 2 session change(s) seen',
+    ]);
 
     await kernel.dispose();
 
-    // **F4**: a module that logged a failure to the error sinks and still
-    // balanced its counters is not a passing example. Assert both.
+    // **L3**: the listener is gone, so the emitter reaches nothing. Asserted
+    // by driving the emitter *after* disposal rather than by counting
+    // handlers — a handler that was removed from the set but still reachable
+    // through a closure would pass the count and fail this.
+    session.emit();
+    expect(service.sessionChanges()).toBe(2);
+
     expect(kernel.errors).toEqual([]);
-    // **H7**: every `ctx.on`, every `ctx.effect` and every module-scoped
-    // instance released by teardown.
+    // **H7**: zero leaked listeners and zero leaked effects, which is the
+    // clause criterion 7 names explicitly.
     expect(kernel.leaks().balanced).toBe(true);
+  });
+
+  it('C8: placing an order with no session fails with a message naming the requester', async () => {
+    const session = fakeSessionService();
+    session.logout();
+    const kernel = createTestKernel({
+      modules: [...dependencyStubs, module],
+      overrides: [
+        provide(PaymentGatewayToken, {
+          factory: () => ({
+            authorize: async () => ({
+              id: 'mock-authorization',
+              amount: { amountMinor: 0, currency: 'EUR' as const },
+              authorizedFor: 'unused',
+            }),
+          }),
+        }),
+        provide(SessionServiceToken, { factory: () => session }),
+      ],
+    });
+    await kernel.activate(OrdersModule);
+
+    // **C4**: `'orders'`, because the chain that built the service was started
+    // by this module's own `init`. Nothing passed that string anywhere.
+    await expect(kernel.get(OrderServiceToken).place(100)).rejects.toThrow(
+      "orders: cannot place an order for 'orders' with no session.",
+    );
+
+    await kernel.dispose();
   });
 
   // **H2**: the hot block, executed rather than read. `ModuleHotContext` is

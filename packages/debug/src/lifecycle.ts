@@ -1,58 +1,56 @@
 // `@app/debug` — the module lifecycle (spec §8).
 //
-// **There is deliberately no `dispose` export in this file**, and `module.ts`
-// deliberately declares no `dispose` thunk. Spec §8: "`ctx` collects
-// disposables so teardown is structural; a hand-written `dispose` mirroring
-// `init` is an anti-pattern and should almost never exist." Everything `init`
-// registers below is registered *through* `ctx`, so **L3** tears it down in
-// reverse registration order with nothing to mirror. Add a `dispose` only for
-// teardown that `ctx` genuinely cannot express — and then say in a comment
-// what that is.
+// **This module fails on purpose.** It is the demo's proof of **F1/F3**:
+// a non-critical module whose activation throws is quarantined — status
+// `failed` with the error retained, providers and contributions withdrawn —
+// while every other module activates normally and startup completes.
 //
-// **L4**: after teardown the `ctx` is dead. Do not close over it in anything
-// that can outlive the module; using a stale one throws, naming this module.
+// It throws in `init` rather than in the providers thunk because that is the
+// harder case: the providers thunk has already run and registered, so
+// quarantine has something real to withdraw (F3), and the `ctx` cleanups the
+// half-finished `init` registered still run.
 
 import { recordEvaluation } from '@ng-react/kernel';
 import type { ModuleContext } from '@ng-react/kernel';
-import {
-  DebugDraftsToken,
-  DebugServiceToken,
-  DebugSessionToken,
-} from './contract';
-import type { DebugRecord } from './contract';
+import { DebugProbeToken } from './contract';
 
 // **Acceptance criterion 9** — see the same call in `providers.ts`.
 recordEvaluation('debug', 'debug/lifecycle.ts');
 
 /**
- * **L1/L2**: the module's only place for effects. `ctx.get` resolves with
- * this module as the resolution context (**C4**), so `MODULE_ID` inside every
- * factory reached from here is `'debug'`.
+ * The message the demo UI shows and every test asserts on.
+ *
+ * **Deliberately not exported**, and the tests duplicate the literal instead.
+ * Exporting it made `module.test.ts` `import ... from './lifecycle'`, which
+ * evaluates this file when the *test file* loads — before any kernel exists —
+ * so `recordEvaluation` below fired into no recorder and criterion 9's
+ * evaluation-order assertion lost its last entry. A test file that imports a
+ * module's implementation has already broken D1 for itself.
+ */
+const DEBUG_INIT_FAILURE =
+  "debug: init failed on purpose so the demo can show F3's quarantine. " +
+  'The app must still start, and every other module must still be ready.';
+
+/**
+ * **F1**: throws, every time.
+ *
+ * **It fails on retry too, and that is deliberate.** `kernel.retry(ref)`
+ * (**F3**) re-attempts activation from a clean slate, and the honest thing
+ * for this module to do is fail again: a retry that succeeded the second time
+ * would need a flag somewhere, and the only places to keep one are a module
+ * closure (which H3 says is lost on every edit, so the demo would behave
+ * differently before and after a hot update) or another module's provider
+ * (which would be an undeclared dependency this module has no `dependsOn`
+ * for). What the Retry button demonstrates is therefore the full F3 cycle —
+ * `failed → activating → failed`, a *second* entry in the error log, and the
+ * panel row still absent — which is what retrying a genuinely broken module
+ * looks like.
  */
 export function init(ctx: ModuleContext): void {
-  const service = ctx.get(DebugServiceToken);
-  const drafts = ctx.get(DebugDraftsToken);
-
-  // **L2**: sugar over `effect` for any subscribe/unsubscribe-shaped API.
-  // The service is an ordinary emitter here; the event bus (spec 02) fits the
-  // same signature without being special-cased.
-  ctx.on(service, 'debug/changed', (record: DebugRecord) => {
-    drafts.setState((current) => current.filter((draft) => draft.id !== record.id));
-  });
-
-  // **C7 — the blessed way to use a `transient`.** The container never
-  // disposes a transient instance, so its lifetime is the consumer's
-  // responsibility: acquire it inside `ctx.effect` and release it in the
-  // cleanup the effect returns. Resolving one at the top level of `init` (or
-  // of a component — **R2**) leaks it.
-  ctx.effect(() => {
-    const session = ctx.get(DebugSessionToken);
-    const timer = setInterval(() => {
-      void session.flush();
-    }, 60_000);
-    return () => {
-      clearInterval(timer);
-      session.close();
-    };
-  });
+  // Resolved before throwing so the failure happens with a real, constructed
+  // module-scoped instance outstanding: quarantine has to dispose it as well
+  // as withdraw the registration, and a leak here would show up in H7's
+  // counters as a positive residual for `debug`.
+  ctx.get(DebugProbeToken);
+  throw new Error(DEBUG_INIT_FAILURE);
 }

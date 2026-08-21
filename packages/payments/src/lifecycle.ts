@@ -1,58 +1,33 @@
 // `@app/payments` — the module lifecycle (spec §8).
 //
-// **There is deliberately no `dispose` export in this file**, and `module.ts`
-// deliberately declares no `dispose` thunk. Spec §8: "`ctx` collects
-// disposables so teardown is structural; a hand-written `dispose` mirroring
-// `init` is an anti-pattern and should almost never exist." Everything `init`
-// registers below is registered *through* `ctx`, so **L3** tears it down in
-// reverse registration order with nothing to mirror. Add a `dispose` only for
-// teardown that `ctx` genuinely cannot express — and then say in a comment
-// what that is.
-//
-// **L4**: after teardown the `ctx` is dead. Do not close over it in anything
-// that can outlive the module; using a stale one throws, naming this module.
+// No `dispose` export, and no `dispose` thunk in `module.ts`: everything
+// below is registered through `ctx`, so **L3** tears it down in reverse
+// registration order and there is nothing to mirror (**D4**).
 
 import { recordEvaluation } from '@ng-react/kernel';
 import type { ModuleContext } from '@ng-react/kernel';
-import {
-  PaymentsDraftsToken,
-  PaymentsServiceToken,
-  PaymentsSessionToken,
-} from './contract';
-import type { PaymentsRecord } from './contract';
+import { PaymentDraftStoreToken } from './contract';
 
 // **Acceptance criterion 9** — see the same call in `providers.ts`.
 recordEvaluation('payments', 'payments/lifecycle.ts');
 
+/** The draft the demo starts with, so the persistent store has visible state. */
+const SEED_REFERENCE = 'demo-basket';
+
 /**
- * **L1/L2**: the module's only place for effects. `ctx.get` resolves with
- * this module as the resolution context (**C4**), so `MODULE_ID` inside every
- * factory reached from here is `'payments'`.
+ * **L1**: resolves with this module as the resolution context (**C4**).
  */
 export function init(ctx: ModuleContext): void {
-  const service = ctx.get(PaymentsServiceToken);
-  const drafts = ctx.get(PaymentsDraftsToken);
+  const drafts = ctx.get(PaymentDraftStoreToken);
 
-  // **L2**: sugar over `effect` for any subscribe/unsubscribe-shaped API.
-  // The service is an ordinary emitter here; the event bus (spec 02) fits the
-  // same signature without being special-cased.
-  ctx.on(service, 'payments/changed', (record: PaymentsRecord) => {
-    drafts.setState((current) => current.filter((draft) => draft.id !== record.id));
-  });
-
-  // **C7 — the blessed way to use a `transient`.** The container never
-  // disposes a transient instance, so its lifetime is the consumer's
-  // responsibility: acquire it inside `ctx.effect` and release it in the
-  // cleanup the effect returns. Resolving one at the top level of `init` (or
-  // of a component — **R2**) leaks it.
-  ctx.effect(() => {
-    const session = ctx.get(PaymentsSessionToken);
-    const timer = setInterval(() => {
-      void session.flush();
-    }, 60_000);
-    return () => {
-      clearInterval(timer);
-      session.close();
-    };
-  });
+  // **H3, and the seeding is conditional for a reason.** An unconditional
+  // seed would make the persistent store impossible to observe: every HMR
+  // re-activation would re-add the draft, so a preserved state and a
+  // discarded one would look identical. Seeding only an *empty* store means
+  // the count in the demo UI is evidence — it holds steady across an edit to
+  // this file (H4 carries the snapshot onto the fresh instance) and returns
+  // to one after a real `kernel.deactivate`, which discards it.
+  if (drafts.getState().length === 0) {
+    drafts.setState([{ reference: SEED_REFERENCE, amount: { amountMinor: 4200, currency: 'EUR' } }]);
+  }
 }

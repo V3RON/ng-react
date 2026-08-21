@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit --pretty"
   },
   "dependencies": {
+    "__dependsOnDependencies__": "workspace:*",
     "@ng-react/kernel": "workspace:*"
   }
 }

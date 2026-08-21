@@ -1,0 +1,84 @@
+/* A diagnostic surface, not a design exercise: system fonts, one accent per
+   module status, and nothing that would survive being called a theme. */
+
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+main {
+  margin: 0 auto;
+  max-width: 60rem;
+  padding: 1.5rem 1rem 4rem;
+}
+
+h1 {
+  font-size: 1.4rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin-block: 2rem 0.5rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+code {
+  font-family: ui-monospace, monospace;
+}
+
+.note {
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.status {
+  border-radius: 0.25rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  padding: 0.1rem 0.4rem;
+}
+
+.status-ready {
+  background: #1a7f37;
+  color: #fff;
+}
+
+.status-failed {
+  background: #b42318;
+  color: #fff;
+}
+
+.status-activating {
+  background: #9a6700;
+  color: #fff;
+}
+
+.status-registered,
+.status-disposed {
+  background: color-mix(in srgb, currentColor 15%, transparent);
+}
+
+ol,
+ul {
+  font-size: 0.9rem;
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+button {
+  font: inherit;
+  padding: 0.25rem 0.7rem;
+}

@@ -7,15 +7,16 @@
 // acceptance criterion 7.
 
 import { describe, expect, it } from 'vitest';
-import { createTestKernel, evaluationLog, provide } from '@ng-react/kernel';
+import { createTestKernel, __defineModuleImport__evaluationLog, provide } from '@ng-react/kernel';
 import type { Kernel, ModuleDescriptor, ModuleRef } from '@ng-react/kernel';
 import { __Pascal__GatewayToken, __Pascal__ServiceToken, __Ref__ } from './contract';
 import { acceptHotUpdate, module } from './module';
 import type { ModuleHotContext } from './module';
+// __dependencyStubs__
 
 describe('__id__ module', () => {
   it('D1 / criterion 9: nothing is evaluated until the activation trigger, then in order', async () => {
-    const kernel = createTestKernel({ modules: [module] });
+    const kernel = createTestKernel({ modules: [__modulesUnderTest__] });
     expect(kernel.status(__Ref__)).toBe('registered');
 
     // Registration is cheap: the descriptor's static fields are readable
@@ -43,7 +44,7 @@ describe('__id__ module', () => {
 
   it('R4: activates with a mocked gateway, behaves, and disposes without leaks', async () => {
     const kernel = createTestKernel({
-      modules: [module],
+      modules: [__modulesUnderTest__],
       // **C6**: the module's own plain `provide` for this token is superseded
       // by the override rather than colliding with it (§17, issue #37), so
       // mocking the gateway does not kill the module that provides it.

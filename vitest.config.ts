@@ -41,6 +41,37 @@ export default defineConfig({
         },
       },
       {
+        // Generated application module packages — `@app/<id>` (spec §4).
+        //
+        // Added by task 8.1, and the reason is a finding rather than a
+        // convenience: `pnpm create-module` emits an R4 `src/module.test.ts`
+        // per package and its own next-steps tell you to run `pnpm verify`,
+        // but every project above is rooted at a *named* directory, so the
+        // emitted test matched no include glob and ran nowhere. Four modules
+        // were generated and `pnpm test` still reported exactly the same 585
+        // tests as before — the emitted suite passing was a claim nothing
+        // checked. `exclude` names the three packages that own a project
+        // above rather than `include` naming the four @app ones, so the next
+        // generated module is covered the moment it is written.
+        //
+        // node env, no React: these are `createTestKernel` suites, and
+        // acceptance criterion 7 requires them to run with no renderer.
+        test: {
+          name: 'app-modules',
+          root: './packages',
+          environment: 'node',
+          include: ['*/src/**/*.test.ts'],
+          exclude: [
+            '**/node_modules/**',
+            '**/dist/**',
+            'ng-react/**',
+            'create-module/**',
+            'eslint-config-modules/**',
+          ],
+          globals: true,
+        },
+      },
+      {
         // create-module generator tests (stage 7, task 7.2).
         //
         // Two include globs, and the second one is the point. `src/**` is the

@@ -1,15 +1,13 @@
 // `@app/payments` — the module's own test, against `createTestKernel` (**R4**).
 //
-// R4 is the harness the spec names for exactly this: "activate a module with
-// mocked providers (via `override: true`), drive its lifecycle, dispose, and
-// assert via `kernel.inspect()` and H7-style leak counters that nothing
-// survived". It runs in a plain node environment with no React renderer —
-// acceptance criterion 7.
+// Runs in a plain node environment with no React renderer — acceptance
+// criterion 7.
 
 import { describe, expect, it } from 'vitest';
-import { createTestKernel, evaluationLog, provide } from '@ng-react/kernel';
+import { createTestKernel, evaluationLog } from '@ng-react/kernel';
 import type { Kernel, ModuleDescriptor, ModuleRef } from '@ng-react/kernel';
-import { PaymentsGatewayToken, PaymentsServiceToken, PaymentsModule } from './contract';
+import { DiagnosticPanelToken } from '@app/auth/contract';
+import { PaymentDraftStoreToken, PaymentGatewayToken, PaymentsModule } from './contract';
 import { acceptHotUpdate, module } from './module';
 import type { ModuleHotContext } from './module';
 
@@ -17,19 +15,10 @@ describe('payments module', () => {
   it('D1 / criterion 9: nothing is evaluated until the activation trigger, then in order', async () => {
     const kernel = createTestKernel({ modules: [module] });
     expect(kernel.status(PaymentsModule)).toBe('registered');
-
-    // Registration is cheap: the descriptor's static fields are readable
-    // without any implementation file having been evaluated.
     expect(evaluationLog(kernel)).toEqual([]);
 
     await kernel.activate(PaymentsModule);
 
-    // This assertion is what makes the empty one above mean something. On its
-    // own, an empty log is also what you get from a `module.ts` that imported
-    // `./providers` at the top — that evaluation happens when *this test file*
-    // is loaded, before any kernel exists to record it. The full sequence
-    // below is not reproducible that way: it pins that each file was
-    // evaluated, and that each was evaluated *after* the trigger.
     expect(evaluationLog(kernel).map((event) => event.file)).toEqual([
       '<activate>',
       '<providers>',
@@ -41,40 +30,50 @@ describe('payments module', () => {
     await kernel.dispose();
   });
 
-  it('R4: activates with a mocked gateway, behaves, and disposes without leaks', async () => {
-    const kernel = createTestKernel({
-      modules: [module],
-      // **C6**: the module's own plain `provide` for this token is superseded
-      // by the override rather than colliding with it (§17, issue #37), so
-      // mocking the gateway does not kill the module that provides it.
-      overrides: [
-        provide(PaymentsGatewayToken, {
-          factory: () => ({
-            fetch: async (id: string) => ({ id, label: 'mocked record' }),
-          }),
-        }),
-      ],
-    });
-
+  it('R4/C4: the gateway authorizes on behalf of its requester and clears the draft', async () => {
+    const kernel = createTestKernel({ modules: [module] });
     await kernel.activate(PaymentsModule);
     expect(kernel.status(PaymentsModule)).toBe('ready');
 
-    const service = kernel.get(PaymentsServiceToken);
-    await expect(service.load('42')).resolves.toEqual({ id: '42', label: 'mocked record' });
+    // H3: `init` seeded the persistent store, and only because it was empty.
+    const drafts = kernel.get(PaymentDraftStoreToken);
+    expect(drafts.getState().map((draft) => draft.reference)).toEqual(['demo-basket']);
 
-    // C9: provenance is kernel-assigned, so `inspect()` attributes every
-    // provider above to this module.
-    const owners = new Set(kernel.inspect().providers.map((row) => row.owner));
-    expect([...owners]).toEqual(['payments']);
+    // **C4/ADR-2**: this resolution was started by the test, i.e. outside any
+    // module, so `MODULE_ID` is the reserved id `'app'` — visible in the
+    // authorization id, which is the point of C4's "consumer-specialized
+    // services" without anyone passing an id string.
+    const gateway = kernel.get(PaymentGatewayToken);
+    await expect(gateway.authorize({ amountMinor: 4200, currency: 'EUR' }, 'demo-basket')).resolves
+      .toEqual({
+        id: 'auth-app-1',
+        amount: { amountMinor: 4200, currency: 'EUR' },
+        authorizedFor: 'demo-basket',
+      });
+    expect(drafts.getState()).toEqual([]);
+
+    // C9: every provider above is attributed to this module.
+    expect([...new Set(kernel.inspect().providers.map((row) => row.owner))]).toEqual(['payments']);
+
+    // C5: the row this module contributes to `auth`'s collection token. It is
+    // resolvable without `auth` being registered at all — a contribution
+    // token is a value identity (C1), not a link to its declaring package.
+    expect(kernel.getAll(DiagnosticPanelToken).map((panel) => panel.label)).toEqual([
+      'Payment drafts',
+    ]);
 
     await kernel.dispose();
-
-    // **F4**: a module that logged a failure to the error sinks and still
-    // balanced its counters is not a passing example. Assert both.
     expect(kernel.errors).toEqual([]);
-    // **H7**: every `ctx.on`, every `ctx.effect` and every module-scoped
-    // instance released by teardown.
     expect(kernel.leaks().balanced).toBe(true);
+  });
+
+  it('C8: authorizing a non-positive amount fails with a message naming the reference', async () => {
+    const kernel = createTestKernel({ modules: [module] });
+    await kernel.activate(PaymentsModule);
+    await expect(
+      kernel.get(PaymentGatewayToken).authorize({ amountMinor: 0, currency: 'USD' }, 'empty'),
+    ).rejects.toThrow("payments: cannot authorize 0 USD for 'empty'.");
+    await kernel.dispose();
   });
 
   // **H2**: the hot block, executed rather than read. `ModuleHotContext` is
