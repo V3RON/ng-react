@@ -48,6 +48,15 @@ export default tseslint.config(
   {
     // **B1/C6 — `compositionRoot` is an option, not a convention.**
     //
+    // **Two entries since issue #53**, and the plural is the point: a workspace
+    // has one composition root *per application*, not one in total. `apps/native`
+    // is a second host for the same six module packages, so it has a second
+    // root, and it is the only file in that app allowed to import
+    // `<pkg>/module`. Adding it here is what makes B1 enforced in the new app
+    // rather than merely observed by convention — before this line every
+    // `@app/*/module` import in `apps/native/src/composition-root.ts` was a
+    // lint error, which is the rule working exactly as intended.
+    //
     // Both rules below default to `['**/composition-root.{ts,tsx}',
     // '**/main.tsx']`, which is a sensible default and *not* this workspace's
     // answer: `apps/react/src/main.tsx` is the entry point, not the
@@ -64,11 +73,21 @@ export default tseslint.config(
     rules: {
       'ng-react-modules/module-entry-only-in-composition-root': [
         'error',
-        { compositionRoot: ['**/apps/react/src/composition-root.ts'] },
+        {
+          compositionRoot: [
+            '**/apps/react/src/composition-root.ts',
+            '**/apps/native/src/composition-root.ts',
+          ],
+        },
       ],
       'ng-react-modules/no-override-outside-composition-root': [
         'error',
-        { compositionRoot: ['**/apps/react/src/composition-root.ts'] },
+        {
+          compositionRoot: [
+            '**/apps/react/src/composition-root.ts',
+            '**/apps/native/src/composition-root.ts',
+          ],
+        },
       ],
     },
   },

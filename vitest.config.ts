@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
@@ -19,6 +20,39 @@ import react from '@vitejs/plugin-react';
  */
 const platformResolve = {
   extensions: ['.web.tsx', '.web.ts', '.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'],
+};
+
+/**
+ * **The *native* half of the same decision** — the mirror image of
+ * `platformResolve`, used by the `native` project below and by nothing else.
+ *
+ * `.native.tsx`/`.native.ts` go first, so `providers.ts`'s `./screen` resolves
+ * to `screen.native.tsx` exactly as Metro resolves it on device. The tail is
+ * Vite's default, restated for the same reason: `extensions` replaces the
+ * default rather than extending it.
+ *
+ * **The alias is the honest part of this and needs saying out loud.**
+ * `react-native`'s entry point is Flow-typed JavaScript that Node cannot parse
+ * and esbuild cannot strip, so the real package cannot be loaded outside Metro
+ * at all. Issue #53 says "do not bolt on a second test runner without saying
+ * so"; this is what was done instead of adding Jest with `react-native`'s
+ * preset. The tests in that project assert collection contents, C5 sequences,
+ * C9 attribution and the HMR adapter's shape — none of which touch a React
+ * Native primitive, because a component is an opaque *value* to the kernel.
+ * **Nothing renders**, and `apps/native/src/testing/react-native-stub.ts`
+ * carries the full reasoning and the limits.
+ */
+const nativeResolve = {
+  extensions: ['.native.tsx', '.native.ts', '.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'],
+  alias: [
+    {
+      // Anchored: `react-native-gesture-handler` and friends must not match.
+      find: /^react-native$/,
+      replacement: fileURLToPath(
+        new URL('./apps/native/src/testing/react-native-stub.ts', import.meta.url),
+      ),
+    },
+  ],
 };
 
 export default defineConfig({
@@ -58,6 +92,28 @@ export default defineConfig({
           root: './apps/react',
           environment: 'jsdom',
           include: ['src/**/*.test.{ts,tsx}'],
+          globals: true,
+        },
+      },
+      {
+        // The Expo / React Navigation app (issue #53).
+        //
+        // **node env and `*.test.ts` only, deliberately.** There is no React
+        // Native renderer in this workspace and adding one would mean a second
+        // test runner; the logic worth testing here — the contribution
+        // collections, the C5 sequences, C9 attribution, the composition root
+        // and the HMR adapter's shape — needs no renderer at all. The
+        // `.test.tsx` extension is therefore *not* included: the convention in
+        // AGENTS.md §3 is that a `.tsx` test is one that needs a renderer, and
+        // in this project there is none to be had. What is covered only by the
+        // simulator run is listed in the PR body and in
+        // `apps/native/src/testing/react-native-stub.ts`.
+        resolve: nativeResolve,
+        test: {
+          name: 'native',
+          root: './apps/native',
+          environment: 'node',
+          include: ['src/**/*.test.ts'],
           globals: true,
         },
       },

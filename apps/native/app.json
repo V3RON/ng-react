@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "ng-react native",
+    "slug": "ng-react-demo-native",
+    "scheme": "ngreactdemo",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "dev.ngreact.demonative",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "dev.ngreact.demonative"
+    }
+  }
+}

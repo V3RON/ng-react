@@ -560,3 +560,53 @@ Discrepancies found in this document and how they were resolved:
   `getAll`, `subscribeAll`, `ownerOf`, `epochOf`, `bumpEpoch`, `subscribeEpoch`, `inspect`,
   `activate`, `whenStartupComplete`, `deactivate`, `hotReplace`, `retry`) were audited in the
   same pass and all forward their full signature. See #24 and #49.
+- **§11 H2 / ADR-5 — `HmrAdapter.enabled` is documented as a guard and is read by nothing.** Its
+  doc comment in `packages/ng-react/src/hmr/adapter.ts` says "`false` in a production build, or
+  when the host has no hot runtime. **The kernel guards its `invalidate` calls with it**, so a
+  production kernel never asks a bundler for anything." It does not: `enabled` is declared on the
+  interface, set by `createViteHmrAdapter` and `createNoopHmrAdapter`, and read by **no file** in
+  `packages/ng-react/src`. The only guard on either call site (`kernel/kernel.ts:1218` and
+  `:1354`) is the `?.` that tests for the *optional member*. Measured by re-running the existing
+  H6 invalidate test with `{ enabled: false, invalidate: vi.fn() }`: `invalidate` is still called
+  with `('payments', 'module could not be re-activated after a hot update')`. So `{ enabled: true }`
+  with `invalidate` omitted — the Metro adapter — is behaviourally identical to
+  `createNoopHmrAdapter()`, and a rule stated in a doc is not enforced by code (principle 4,
+  `AGENTS.md` §9). **Not resolved.** Found while wiring the native composition root, and
+  deliberately left unfixed there for the reason #49 was: the fix is a change to
+  `packages/ng-react/src/kernel/kernel.ts`, and issue #53 exists to show the six module packages
+  and the kernel are reused *unmodified*. See issue #53.
+- **§11 H2 — the generated hot block's Metro no-op is now measured rather than reasoned, and the
+  mechanism is not the one the comment predicted.** The portability note on each generated
+  `acceptHotUpdate` says Metro "does not have" `import.meta.hot`. Under Expo SDK 57 that is true
+  but not by absence: `babel-preset-expo`'s `import-meta-transform-plugin` rewrites every
+  `import.meta` to `globalThis.__ExpoImportMetaRegistry`, and `expo/src/winter/ImportMetaRegistry.ts`
+  exposes exactly one member, `url`. So `import.meta.hot` is `undefined` rather than a syntax
+  error, the literal self-accept block never runs, `selfAccept` stays `undefined`, and
+  `acceptHotUpdate` returns at its `context === undefined` guard. **The comment's two supporting
+  claims are both confirmed on the emitted bundle**: (a) Metro's `module` *is* shadowed — in the
+  iOS bundle `@app/auth/module` is wrapped as `__d(function(g,r,i,a,_m,e,d){…})`, its `module`
+  parameter renamed to `_m` because the file exports a binding of that name; (b) Metro's
+  self-accept callback takes no arguments — `metro-runtime/src/polyfills/require.js` calls
+  `hot._acceptCallback()` with none, so a shim forwarding `module.hot.accept(cb)` would hand
+  `undefined` to the callback and silently do nothing. **No shim is shipped.** Under Metro the
+  only file that could hold one is the composition root, and a self-accepting composition root is
+  re-evaluated on update — constructing a second kernel and breaking R1's "exactly one
+  `<AppKernel>` per kernel", which is worse than the reload it replaces. Per-module Metro
+  self-acceptance needs a Metro-side entry file per module or a transform, and the generator emits
+  neither. See issue #53.
+- **§17 (tooling) — Metro needs no configuration at all for this workspace, and `apps/native` has
+  no `metro.config.js`.** Issue #53 named "Metro + pnpm workspace + TypeScript-source `exports`
+  maps" as its main integration risk and expected a `metro.config.js` enabling package exports and
+  teaching Metro about the workspace. None of it is needed under Expo SDK 57 / Metro 0.84:
+  `unstable_enablePackageExports` is `true` in `metro-config`'s own defaults, `unstable_enableSymlinks`
+  has been the default since 0.79, and `expo/metro-config`'s `getDefaultConfig` already infers the
+  monorepo's `watchFolders` and `nodeModulesPaths`. Measured by writing the file, removing each
+  setting in turn, and then removing the file entirely — every variant bundles 1350 modules, the
+  last with `--clear` against a cold cache. The file was deleted rather than kept as documentation:
+  a configuration that looks load-bearing and does nothing is the shape of check this repository
+  has been bitten by three times (#43's inert `no-cycle`, #46's non-self-accepting hot block, and
+  #52's silently-ignored root-level Vitest `resolve`). `babel.config.js` is the same case and is
+  likewise absent — with and without it the emitted Hermes bundle is byte-for-byte the same size.
+  **Metro is therefore confirmed as the "free" resolver #52 predicted**: it is the sixth consumer
+  of the platform-extension decision and the only one that needed no vocabulary of its own. See
+  issue #53.

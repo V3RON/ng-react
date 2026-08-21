@@ -16,7 +16,8 @@
     "@app/dashboard": "workspace:*",
     "@app/nav": "workspace:*",
     "@ng-react/kernel": "workspace:*",
-    "react": "^19.2.8"
+    "react": "^19.2.8",
+    "react-native": "0.86.2"
   },
   "devDependencies": {
     "@types/react": "^19.2.0"

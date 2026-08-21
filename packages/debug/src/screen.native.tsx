@@ -1,25 +1,38 @@
 // `@app/debug` — the module's React components, **React Native implementation**.
 //
-// **A placeholder, and deliberately labelled as one.** The platform decision
-// this file is the other half of is written up in
-// `packages/dashboard/src/screen.web.tsx`; the "what issue #53 must do"
-// checklist is in `packages/dashboard/src/screen.native.tsx`. Neither is
-// repeated here.
+// The platform decision this file is the other half of is written up once, in
+// `packages/dashboard/src/screen.web.tsx`; the checklist that turned this file
+// from a placeholder into an implementation is discharged and recorded in
+// `packages/dashboard/src/screen.native.tsx`.
 //
-// What is real today is the *file*: `./screen` resolves to `screen.web.tsx`
-// and not to this on every web resolver in the workspace, and
-// `apps/react/src/shell/dashboard.test.tsx` fails if it ever stops doing so —
-// a check that is only meaningful because this file is here to be picked by
-// mistake.
+// **Nothing in this workspace ever renders this component, on either
+// platform**, and that is the point of the module. `debug`'s `init` throws on
+// purpose, so **F3** withdraws the `DashboardCardToken` contribution its
+// `providers.ts` had already registered, and the card never reaches the
+// dashboard. The component exists so that the absence is caused by quarantine
+// rather than by there being nothing to withdraw.
 //
-// What is not real is React Native. There is none in this workspace, and each
-// package's `tsconfig.json` includes `src/**/*`, so this file is type-checked
-// by the *web* `tsc` and must compile without it. Hence plain React and a
-// marker, not `<View>` / `<Text>`.
+// It is written as a real React Native component rather than left as a stub
+// for exactly that reason: a card whose component could not render would give
+// F3 a second, accidental explanation for the card being missing, and "absent
+// because withdrawn" and "absent because broken" are the two things the
+// dashboard test exists to tell apart.
 
 import type { ReactElement } from 'react';
+import { StyleSheet, Text } from 'react-native';
+import { useService } from '@ng-react/kernel';
+import { DebugProbeToken } from './contract';
 
-/** Placeholder — see this file's header. */
+/** Would render `debug`'s probe, if `debug` ever activated successfully. */
 export function DebugCard(): ReactElement {
-  return <section data-testid="debug-card" data-platform="native" />;
+  const probe = useService(DebugProbeToken);
+  return (
+    <Text style={styles.body} testID="debug-card">
+      {probe.describe()} · platform: native
+    </Text>
+  );
 }
+
+const styles = StyleSheet.create({
+  body: { color: '#25303a', fontSize: 15, lineHeight: 21 },
+});
