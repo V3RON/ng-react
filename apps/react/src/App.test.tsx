@@ -87,6 +87,29 @@ describe('demo app', () => {
       sequenceOf(log, 'ready').filter((id) => ['auth', 'payments', 'orders'].includes(id)),
     ).toEqual(['auth', 'payments', 'orders']);
 
+    // **The guarantee the next assertion needs, and it is not
+    // `whenStartupComplete` (#51).** That assertion is an *exhaustive* claim
+    // about the collection, and `debug` is one of its four possible
+    // contributors — so it is only well-defined once `debug` has settled.
+    // **A3** gates startup on eager **critical** modules; `debug` is eager
+    // *non-critical*, so `whenStartupComplete()` says nothing about it and in
+    // fact always resolves while it is still `activating` (measured: 300 of
+    // 300 kernels). `debug`'s `DiagnosticPanel` row then enters the collection
+    // when its providers register and leaves when F3 withdraws them — a real
+    // window, median ≈ 8 ms wide, that nothing here was ordered against.
+    // The test passed anyway only because `activate(OrdersModule)` takes
+    // longer still (the window had closed ≥ 25 ms before, over 60 cold runs),
+    // which is a coincidence of import timing, not a guarantee. Awaiting the
+    // quarantine makes it one.
+    //
+    // Waiting rather than filtering `debug` out of the list is deliberate:
+    // `debug` is a real contributor to *this* token, so dropping it would turn
+    // an exhaustive assertion into a whitelist that could no longer notice an
+    // unexpected fourth row. (Contrast the filter above, which excludes `nav`
+    // and `shell` — neither contributes to this token at all, and that
+    // assertion is about order rather than membership.)
+    await waitForStatus(kernel, DebugModule, 'failed');
+
     // **C5**: and the contribution collection grew with them. `debug` is
     // absent because F3 withdrew its row.
     expect(panelOwners(kernel)).toEqual(['auth', 'payments', 'orders']);
