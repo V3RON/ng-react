@@ -333,3 +333,25 @@ Discrepancies found in this document and how they were resolved:
   `packages/ng-react/src/spec-examples.test.ts`. See ADR-10.
 - **§11 Metro `module.hot`** — abstracted behind an `HmrAdapter` interface so the kernel
   stays bundler-agnostic and React Native ready. See ADR-5.
+- **§7.2 C7 vs §11 H4 — the lifetime of a module-owned `singleton`.** C7 says a `singleton`
+  instance is disposed at "app/kernel teardown", which reads as *never* on module disposal.
+  H4 says that on re-activation "every provider instance it registered is disposed and
+  discarded **regardless of scope** — including `singleton`". Taken together with C2's
+  record-identity caching these were not merely ambiguous but unsound: a module's providers
+  thunk re-runs on re-activation and yields fresh `ProviderRecord` objects, so the cache
+  missed and constructed a *second* app-lifetime instance while the first stayed cached and
+  reachable forever. **Resolved in favour of H4:** a `singleton` registered by a module lives
+  for that module's *activation* — deactivation disposes and discards it, re-activation
+  constructs exactly one new one. `singleton` still means "one instance for as long as its
+  provider is registered"; what changed is that C7's prose was written as if a module's
+  providers were registered for the lifetime of the app, which A4 and H2 make untrue. Both
+  scopes are disposed in one merged reverse-construction order. See issue #34.
+- **§7.2 C6 — a plain `provide` that loses to an `override: true`.** C6 makes two `provide`
+  calls for one token a fatal error and names `override: true` as the explicit escape, but
+  did not say what happens to the *loser*. The implementation made it fatal, so the
+  overridden module transitioned to `failed` during activation — meaning that mocking
+  `payments/PaymentGateway` killed `payments`, which is acceptance criterion 7's exact
+  scenario. **Resolved:** a plain `provide` for a token already held by an `override: true`
+  record is **superseded, not rejected**; two *plain* provides remain fatal and still name
+  both modules. Both registration orders now produce byte-identical registry state, and the
+  superseded row is visible in `inspect()` as `overriddenBy`. See issue #37.
