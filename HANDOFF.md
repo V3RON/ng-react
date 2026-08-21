@@ -152,9 +152,17 @@ reality. `AGENTS.md` §9 now lists that as a reject reason, and every dispatch p
 
 `Container.withdraw()` and `Container.disposeModuleScope()` are separate primitives and
 neither calls the other. That is deliberate — the container should not decide lifecycle
-ordering — but **withdrawing without disposing leaks every module-scoped instance silently.**
-The required order (dispose instances *before* withdrawing the providers that describe how to
-dispose them) is written out on #15 and #16.
+ordering. The required order (dispose instances *before* withdrawing the providers) is written
+out on #15 and #16, and task 3.2 implements it.
+
+**Correction (2026-08-21, from #32):** the original version of this note claimed that
+withdrawing without disposing "leaks every module-scoped instance silently." **That is false**,
+and it propagated into the #15/#16 comments before being caught. `Resolver` keys
+`moduleScopedCache` by `entry.owner` and each `CachedInstance` carries its own `record`, so
+`disposeModuleScope` never consults the registry — nothing leaks in either order. What
+withdraw-first actually breaks is **C5's invariant**: subscribers get notified while the
+withdrawn module's instances are still live. Same required order, sound reason. Verified in
+both directions.
 
 ### 5.4 The `onError` seam is still a no-op
 

@@ -288,8 +288,9 @@ app use the bare feature name (`auth`, `orders`) per spec §4. Token labels are
 
 ## 9. Things that will get a PR rejected
 
-- Adding a field to the module descriptor. It has exactly six (D2 note in §5.2) and each
-  addition is a permanent contract requiring justification against principle 1.
+- Adding a field to the module descriptor. It has exactly seven (**ADR-9** — the spec's
+  §5.2 prose says six and is stale; its worked example is the contract) and each addition
+  is a permanent contract requiring justification against principle 1.
 - Introducing a hierarchical/child injector, property injection, async factories, or
   circular-resolution support (spec §7.3).
 - Adding a lifecycle hook beyond `init` and `dispose` (principle 2).
