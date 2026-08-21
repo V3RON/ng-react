@@ -16,7 +16,7 @@
 import { recordEvaluation } from '@ng-react/kernel';
 import type { ModuleContext } from '@ng-react/kernel';
 import { SessionServiceToken } from '@app/auth/contract';
-import { OrderServiceToken } from './contract';
+import { OrderNotesToken, OrderServiceToken } from './contract';
 
 // **Acceptance criterion 9** — see the same call in `providers.ts`.
 recordEvaluation('orders', 'orders/lifecycle.ts');
@@ -31,6 +31,17 @@ const SYNC_INTERVAL_MS = 60_000;
 export function init(ctx: ModuleContext): void {
   const service = ctx.get(OrderServiceToken);
   const session = ctx.get(SessionServiceToken);
+
+  // **H3, and the seed is conditional for the same reason `payments`' is.**
+  // An unconditional seed would make a preserved store and a discarded one
+  // look identical, so the count below is only evidence because this line
+  // does not run twice: it holds steady across an edit to *this* file (H4
+  // carries the snapshot onto the fresh instance) and returns to one after a
+  // real `kernel.deactivate`, which discards it.
+  const notes = ctx.get(OrderNotesToken);
+  if (notes.getState().length === 0) {
+    notes.setState([{ text: 'seeded by orders/lifecycle.ts init' }]);
+  }
 
   // **L2**: sugar over `effect` for any subscribe/unsubscribe-shaped API.
   // `SessionService` is an ordinary emitter here — the kernel special-cases

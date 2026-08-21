@@ -14,6 +14,7 @@ import type { ModuleRef, Store } from '@ng-react/kernel';
 import { AuthErrorLogToken, AuthModule, DiagnosticPanelToken } from '@app/auth/contract';
 import type { AuthErrorEntry } from '@app/auth/contract';
 import { DebugModule } from '@app/debug/contract';
+import { NavigatorToken, NavModule } from '@app/nav/contract';
 import { OrdersModule } from '@app/orders/contract';
 import { PaymentsModule } from '@app/payments/contract';
 import type { LifecycleLog } from './lifecycle-log';
@@ -25,6 +26,7 @@ const MODULE_ROWS: readonly { readonly ref: ModuleRef; readonly note: string }[]
   { ref: DebugModule, note: 'eager, non-critical — init throws on purpose (F1/F3)' },
   { ref: PaymentsModule, note: 'lazy — activated transitively by orders (A1)' },
   { ref: OrdersModule, note: 'lazy — dependsOn [auth, payments]' },
+  { ref: NavModule, note: 'eager — the PoC navigation module (criterion 10)' },
 ];
 
 /** Subscribes to any `defineStore` (**H3**) the React way. */
@@ -137,6 +139,15 @@ export function App(props: { readonly log: LifecycleLog }): ReactElement {
   // resolution error into the render. Losing the panel is the correct
   // rendering of "the module that owned it is gone".
   const errorLog = useServiceOptional(AuthErrorLogToken);
+  // **Criterion 10, mounted.** The navigator is a value the navigation module
+  // provides, resolved like any other service — spec §4 gives a module
+  // package exactly two subpath exports and a React component is not one of
+  // them, so this is how a screen crosses the boundary. `useModule(NavModule)`
+  // is here for the same reason it is above for `auth`: `useServiceOptional`
+  // does not re-render on plain activation (a known gap), and `nav` is still
+  // `registered` on the first paint.
+  const navState = useModule(NavModule);
+  const Navigator = useServiceOptional(NavigatorToken);
 
   const activateOrders = useCallback(() => {
     // A rejection here is already reported to the F4 sinks and reflected in
@@ -196,6 +207,15 @@ export function App(props: { readonly log: LifecycleLog }): ReactElement {
           working around it here.
         </p>
       </section>
+
+      {Navigator === undefined ? (
+        <p data-testid="navigator-unavailable">
+          <code>nav/Navigator</code> has no provider — <code>nav</code> is{' '}
+          <code>{navState.status}</code>.
+        </p>
+      ) : (
+        <Navigator />
+      )}
 
       <ContributionPanel />
 

@@ -12,6 +12,7 @@
   "dependencies": {
     "@app/auth": "workspace:*",
     "@app/debug": "workspace:*",
+    "@app/nav": "workspace:*",
     "@app/orders": "workspace:*",
     "@app/payments": "workspace:*",
     "@ng-react/kernel": "workspace:*",
