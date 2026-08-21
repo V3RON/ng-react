@@ -76,3 +76,12 @@ export { ErrorSinkToken } from './kernel/failure';
 export type { ModuleState } from './react/hooks';
 export { AppKernel, ModuleScope, useKernel, useModuleScope } from './react/context';
 export { useModule, useService, useServiceAll, useServiceOptional } from './react/hooks';
+
+// testing/ — the test harness (R4, H7, acceptance criteria 7 and 9). Part of
+// the kernel package, not an afterthought: stage 7's generator emits tests
+// that use it and stage 8's acceptance suite is written against it.
+export type { TestKernel, TestKernelOptions, CollectedError } from './testing/test-kernel';
+export { createTestKernel } from './testing/test-kernel';
+export type { LeakReport } from './testing/leak-counters';
+export type { EvaluationEvent } from './testing/evaluation-log';
+export { recordEvaluation, evaluationLog } from './testing/evaluation-log';
