@@ -1,38 +1,13 @@
-// The module dependency graph (task 3.1): edges from `dependsOn`, G2
-// validation, G1 cycle detection, and a topological order that is a pure
-// function of the *set* of modules — never of the order the composition
-// root happened to list them in.
-//
-// Nothing here knows about descriptors, providers, statuses or activation:
-// the input is `(id, dependsOn)` pairs of plain strings, which is exactly
-// what the kernel can hand over without evaluating any implementation code
-// (D1). `ModuleGraph` is internal — it is not exported from `index.ts`;
-// `kernel.ts` is its only intended caller.
-//
-// ---
-//
-// **Why determinism is a hard requirement here, not a nicety.**
-//
-// The topological order is the sort key for every contribution collection
-// (C5, via `ContributionCollections.getTopologicalIndex`), the activation
-// order (§6), and the reverse disposal order (A4). If it depended on the
-// composition root's array order, then adding an unrelated module to that
-// array could silently reorder e.g. the navigation module's routes or the
-// order in which error sinks see an error. So: ties are broken by module
-// id, and every traversal below iterates a *sorted* adjacency list. Two
-// composition roots holding the same descriptors in different orders
-// produce byte-identical output from every method on this file, and
-// `graph.test.ts` pins that with shuffled inputs rather than with one
-// hand-picked expected ordering.
+// The topological order this file produces is the sort key for every
+// contribution collection, the activation order, and (reversed) the
+// disposal order. It is a pure function of the *set* of modules: ties are
+// broken by module id and every traversal iterates a sorted adjacency list,
+// so adding an unrelated module to the composition root cannot silently
+// reorder an existing collection.
 
 import { DependencyCycleError, InvalidDescriptorError, UnknownModuleError } from '../errors';
 
-/**
- * One node of the graph as the kernel hands it over: a module id and the
- * ids it depends on. Plain strings — refs (M1) stay in `kernel.ts`, because
- * a graph algorithm has no use for value identity and every diagnostic this
- * file produces is a string message.
- */
+/** One node of the graph: a module id and the ids it depends on. */
 export interface ModuleGraphNode {
   readonly id: string;
   readonly dependsOn: readonly string[];
@@ -41,40 +16,48 @@ export interface ModuleGraphNode {
 /** Options accepted by `dependenciesOf` / `dependentsOf`. */
 export interface TraversalOptions {
   /**
-   * `false` (default) returns only direct neighbours; `true` returns the
-   * full transitive closure, excluding `id` itself. One function with a
-   * flag rather than two functions (principle 5).
+   * Returns the full transitive closure, excluding the queried module
+   * itself, instead of only direct neighbours.
+   *
+   * @default false
    */
   readonly transitive?: boolean;
 }
 
 /**
- * The validated, sorted dependency graph. Every returned array is frozen
- * and in topological order (or, for `reverseTopologicalOrder`, its exact
- * reverse), so callers never have to re-sort and can never observe
- * registration order.
+ * A validated, sorted dependency graph. Every returned array is frozen, and
+ * every ordering is a function of the module set alone — a caller can never
+ * observe the order the composition root listed its descriptors in.
  */
 export interface ModuleGraph {
   /** Whether `moduleId` is a node of this graph. */
   has(moduleId: string): boolean;
-  /** §6: the activation order — every module after all of its dependencies. */
+  /** The activation order: every module after all of its dependencies. */
   topologicalOrder(): readonly string[];
-  /** A4: the disposal order — exactly `topologicalOrder()` reversed. */
+  /** The disposal order: exactly `topologicalOrder()` reversed. */
   reverseTopologicalOrder(): readonly string[];
   /**
-   * C5: the position of `moduleId` in `topologicalOrder()`, and the
-   * callback `ContributionCollections` orders contribution collections by.
+   * The position of `moduleId` in `topologicalOrder()`, and the key
+   * contribution collections are ordered by.
    *
-   * Returns `Number.NaN` for a module this graph does not know, which
-   * `orderContributions` already treats as "sort last, then by
-   * registration order" — a non-finite index is its documented
-   * unknown-module contract, so this deliberately does not invent `0` (the
-   * *first* position) for a module the graph never saw.
+   * @returns `Number.NaN` for a module this graph does not know, which
+   *   consumers treat as "sort last". Deliberately not `0`, which is the
+   *   *first* position.
    */
   topologicalIndex(moduleId: string): number;
-  /** D3: the modules `moduleId` depends on, in topological order. */
+  /**
+   * The modules `moduleId` depends on: its direct dependencies sorted by
+   * id, or, with `transitive`, the whole closure in topological order.
+   *
+   * @returns an empty array for a module this graph does not know.
+   */
   dependenciesOf(moduleId: string, options?: TraversalOptions): readonly string[];
-  /** A4/F3: the modules that depend on `moduleId`, in topological order. */
+  /**
+   * The modules that depend on `moduleId`: its direct dependents sorted by
+   * id, or, with `transitive`, the whole closure in topological order.
+   *
+   * @returns an empty array for a module this graph does not know.
+   */
   dependentsOf(moduleId: string, options?: TraversalOptions): readonly string[];
 }
 
@@ -85,24 +68,21 @@ interface Edge {
 }
 
 /**
- * Builds and validates the graph (spec §6 steps 2-4).
+ * Builds and validates a dependency graph.
  *
- * Validation runs in the spec's order, and the order matters: a missing
- * module (G2) is reported before any cycle (G1), because a composition root
- * that forgot a descriptor has no meaningful cycle to report — the graph it
- * describes is not the graph it meant.
+ * A missing module is reported before any cycle: a composition root that
+ * forgot a descriptor has no meaningful cycle to report, because the graph
+ * it describes is not the graph it meant.
  *
  * @throws {InvalidDescriptorError} if two nodes share an id. The kernel
- *   checks this first and raises the M3 error with both descriptor
- *   positions; this is the defensive backstop for any other caller, since
- *   every algorithm below assumes ids are unique keys.
- * @throws {UnknownModuleError} G2 — a `dependsOn` id with no node of its
- *   own, naming both the missing module and its dependent. Deterministic:
- *   dependents are checked in id order, and each module's `dependsOn` in
+ *   checks this first with a better message; this is the backstop for any
+ *   other caller, since every algorithm here assumes ids are unique keys.
+ * @throws {UnknownModuleError} for a `dependsOn` id with no node of its own,
+ *   naming both the missing module and its dependent. Deterministic:
+ *   dependents are checked in id order, each module's `dependsOn` in
  *   declaration order.
- * @throws {DependencyCycleError} G1 — with the full cycle path, reported
- *   from the lowest id in the cycle so the message is stable across input
- *   orderings.
+ * @throws {DependencyCycleError} with the full cycle path, starting from the
+ *   lowest id in the cycle so the message is stable across input orderings.
  */
 export function buildModuleGraph(nodes: readonly ModuleGraphNode[]): ModuleGraph {
   const dependsOn = new Map<string, readonly string[]>();
@@ -118,8 +98,8 @@ export function buildModuleGraph(nodes: readonly ModuleGraphNode[]): ModuleGraph
 
   const ids = [...dependsOn.keys()].sort();
 
-  // G2 — a dependsOn id with no descriptor. Checked before edges are built:
-  // an edge to a node that does not exist is not a graph.
+  // Checked before edges are built: an edge to a node that does not exist
+  // is not a graph.
   for (const id of ids) {
     for (const dependency of dependsOn.get(id) ?? []) {
       if (!dependsOn.has(dependency)) {
@@ -129,8 +109,8 @@ export function buildModuleGraph(nodes: readonly ModuleGraphNode[]): ModuleGraph
   }
 
   // Sorted adjacency, in both directions. Every traversal below iterates
-  // these, which is where determinism actually comes from — the sort here
-  // and the min-selection in `topologicallySort`.
+  // these, which together with the min-selection in `topologicallySort` is
+  // where determinism comes from.
   const dependencies = new Map<string, readonly string[]>();
   const dependents = new Map<string, string[]>();
   const edges: Edge[] = [];
@@ -149,7 +129,7 @@ export function buildModuleGraph(nodes: readonly ModuleGraphNode[]): ModuleGraph
     dependents.get(id)?.sort();
   }
 
-  // G1 — cycles are fatal, before any order can be produced.
+  // Cycles are fatal, and must be found before any order can be produced.
   const cycle = findCycle(ids, dependencies);
   if (cycle !== undefined) {
     throw new DependencyCycleError(cycle);
@@ -160,7 +140,7 @@ export function buildModuleGraph(nodes: readonly ModuleGraphNode[]): ModuleGraph
   order.forEach((id, index) => indexById.set(id, index));
   const reversed = Object.freeze([...order].reverse());
 
-  /** Sorts `collected` into topological order — the one ordering this file hands out. */
+  /** Sorts `collected` into topological order. */
   const inTopologicalOrder = (collected: Iterable<string>): readonly string[] =>
     Object.freeze([...collected].sort((a, b) => (indexById.get(a) ?? 0) - (indexById.get(b) ?? 0)));
 
@@ -176,7 +156,7 @@ export function buildModuleGraph(nodes: readonly ModuleGraphNode[]): ModuleGraph
       queue.push(...(adjacency.get(next) ?? []));
     }
     // A module never appears in its own closure: the graph is acyclic by
-    // the time this runs, so `start` is genuinely unreachable from itself.
+    // the time this runs, so `start` is unreachable from itself.
     return seen;
   };
 
@@ -205,13 +185,11 @@ const EMPTY: readonly string[] = Object.freeze([]);
 
 /**
  * Kahn's algorithm with a deterministic tie-break: whenever more than one
- * module has all of its dependencies already placed, the one with the
- * lowest id goes next. That makes the result a pure function of the edge
- * set — the input array order is never consulted, because `ready` is
- * seeded from `ids` (already sorted) and re-sorted on every insertion.
+ * module has all of its dependencies placed, the lowest id goes next. That
+ * makes the result a pure function of the edge set.
  *
- * Precondition: the graph is acyclic (`findCycle` ran first), so the loop
- * always drains and no leftover check is needed here.
+ * Requires an acyclic graph — `findCycle` runs first — so the loop always
+ * drains and needs no leftover check.
  */
 function topologicallySort(
   ids: readonly string[],
@@ -250,24 +228,18 @@ function topologicallySort(
 }
 
 /**
- * G1: finds a cycle, or `undefined` if there is none.
+ * Finds a cycle, or `undefined` if there is none.
  *
- * Deterministic in two independent ways, both of which matter because the
- * message is spec-quoted verbatim and asserted character for character:
+ * Deterministic in two ways. When a graph contains several cycles, the one
+ * reported runs through the lowest module id lying on any cycle. The path
+ * through it is the shortest way back to that module, and among equally
+ * short ways the one a breadth-first walk over sorted adjacency lists finds
+ * first. It must be breadth-first: a depth-first walk with visited-pruning
+ * can miss a genuine cycle entirely.
  *
- *  - **Which cycle.** When a graph contains several, the one reported is
- *    the one through the lowest module id that lies on any cycle. "Lies on
- *    a cycle" is `id` being reachable from `id`, which is a property of the
- *    edge set alone.
- *  - **Which path through it.** A BFS from that module gives the *shortest*
- *    way back to it, and among equally short ways the one BFS discovers
- *    first over sorted adjacency lists. A depth-first walk would instead
- *    report whichever branch it wandered into, and with visited-pruning it
- *    can miss a genuine cycle entirely, which is why this is a BFS.
- *
- * The returned array holds the distinct modules in the cycle, in order and
- * starting from that lowest id; `DependencyCycleError` repeats the first
- * one at the end to close the loop.
+ * @returns the distinct modules in the cycle, in order, starting from that
+ *   lowest id. `DependencyCycleError` repeats the first at the end to close
+ *   the loop.
  */
 function findCycle(
   ids: readonly string[],
@@ -277,9 +249,9 @@ function findCycle(
     const parent = new Map<string, string>();
     const visited = new Set<string>([start]);
     const queue: string[] = [start];
-    // BFS from `start`. `closesCycle` is the first-discovered node with an
-    // edge straight back to `start`; because BFS visits by increasing
-    // distance, the first one found is on a shortest cycle through `start`.
+    // `closesCycle` is the first-discovered node with an edge straight back
+    // to `start`. Because the walk visits by increasing distance, the first
+    // one found lies on a shortest cycle through `start`.
     let closesCycle: string | undefined;
     while (queue.length > 0 && closesCycle === undefined) {
       const current = queue.shift();
