@@ -21,6 +21,7 @@
 // rationale and the alternative (a compiled-TS package) that was rejected.
 
 import importXPlugin from 'eslint-plugin-import-x';
+import { createTypeScriptImportResolver } from 'eslint-import-resolver-typescript';
 import { rules } from './rules/index.js';
 
 const PLUGIN_NAME = 'ng-react-modules';
@@ -45,17 +46,47 @@ function buildConfig(defaultSeverity) {
         'import-x': importXPlugin,
       },
       settings: {
-        // import-x v4's *default* resolver settings (no `import-x/resolver*`
-        // key at all) fall back to a legacy `eslint-import-resolver-node`
-        // lookup that this preset does not depend on and that throws
-        // ("node with invalid interface loaded as resolver") when that
-        // package isn't installed. `createNodeResolver` is import-x's own
-        // built-in replacement (backed by `unrs-resolver`, already a
-        // transitive dependency) — this is the currently-recommended way to
-        // get plain Node resolution under the new resolver API, not a
-        // workaround. See the PR body for the accuracy caveat this still
-        // leaves (no TS-path-aware resolver is configured here).
-        'import-x/resolver-next': [importXPlugin.createNodeResolver()],
+        // The resolver has to be TypeScript-aware or B3 is dead letter.
+        // `createNodeResolver()` (import-x's built-in) applies Node's own
+        // algorithm, which knows `.js`/`.mjs`/`.cjs`/`.json` and *not* `.ts`.
+        // Every internal import in a repo shaped like this one is
+        // extensionless TypeScript — `tsconfig.base.json` sets
+        // `allowImportingTsExtensions: false`, so they cannot be written any
+        // other way — so under the node resolver every internal import is
+        // unresolved, `import-x/no-cycle` has no graph to walk, and it silently
+        // passes everything (issue #43). That is not an accuracy caveat, it is
+        // total loss of the rule: principle 4.
+        //
+        // `createTypeScriptImportResolver` is the maintained TS counterpart
+        // import-x's own docs point at (`eslint-plugin-import-x` ships no TS
+        // resolver of its own). It resolves `.ts`/`.tsx` extensionlessly, honours
+        // `tsconfig` `paths`, and — the part B1 depends on — follows workspace
+        // `exports` maps that point at `.ts` source, which is exactly how
+        // `@ng-react/kernel` and every generated `@app/<id>/contract` are
+        // published here.
+        //
+        // It is backed by the same `unrs-resolver` native binding as
+        // `createNodeResolver`, so `pnpm-workspace.yaml`'s
+        // `allowBuilds: unrs-resolver: true` remains load-bearing.
+        'import-x/resolver-next': [
+          createTypeScriptImportResolver({
+            // Resolve `@types/*` for packages that ship no TS source, so
+            // `no-unresolved` does not fire on type-only imports.
+            alwaysTryTypes: true,
+          }),
+        ],
+        // A TS-aware resolver alone is NOT enough to make `no-cycle` fire, and
+        // this is the half issue #43 does not mention. There is a *second*,
+        // independent gate: to walk past the first hop, `no-cycle` asks
+        // `ExportMap.get()` to parse the imported file, and `ExportMap.for()`
+        // bails with `null` for any path failing `hasValidExtension()` —
+        // whose default allowlist is `['.js', '.mjs', '.cjs']`
+        // (`eslint-plugin-import-x/lib/utils/ignore.js`). With only the
+        // resolver swapped, `no-unresolved` goes green (resolution works) while
+        // `no-cycle` stays just as silent as before, which is the most
+        // misleading possible state. Both settings are load-bearing; verified
+        // by removing each one independently.
+        'import-x/extensions': ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
       },
       rules: {
         // B1
@@ -71,6 +102,13 @@ function buildConfig(defaultSeverity) {
         // B3: "import/no-cycle (or the Nx boundary equivalent) runs across
         // the workspace." Re-exported, not reimplemented.
         'import-x/no-cycle': defaultSeverity,
+        // Not a boundary rule of its own, but the honest check that the
+        // resolver above actually resolves rather than merely being
+        // configured: if it silently stops resolving, `no-cycle` goes quiet
+        // again and nothing else notices, whereas `no-unresolved` turns the
+        // whole workspace into the alarm. Free once a resolver works, and an
+        // unresolved import is a real defect on its own terms.
+        'import-x/no-unresolved': defaultSeverity,
       },
     },
   ];

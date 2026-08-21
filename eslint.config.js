@@ -12,7 +12,21 @@ export default tseslint.config(
     // repo, with their own node_modules and possibly their own eslint plugins.
     // Linting into them makes a root `eslint .` depend on whatever an in-flight
     // agent happens to have installed. Always exclude them.
-    ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', '.claude/**'],
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/coverage/**',
+      '.claude/**',
+      // Issue #43's regression fixture: a deliberate two-file dependency
+      // cycle that `import-x/no-cycle` (spec §13 B3) MUST reject. It is
+      // ignored here for the obvious reason — a root `eslint .` that always
+      // failed would be useless — and lint is still what judges it:
+      // `packages/eslint-config-modules/src/no-cycle.test.ts` runs ESLint
+      // over this directory *with this very config file*, with ignores
+      // disabled, and asserts the cycle is reported. Do not delete the
+      // fixture without deleting that test; do not delete that test.
+      'packages/eslint-config-modules/__fixtures__/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
