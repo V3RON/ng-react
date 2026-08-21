@@ -15,8 +15,25 @@
 //    unsubscribe cleanup runs (L3).
 //  - `effect`   — one `ctx.effect(...)` registration (L2), released when its
 //    cleanup runs (L3).
-//  - `instance` — one **`module`-scoped** provider instance (C2/C7),
-//    released when the container disposes it (`disposeModuleInstances`).
+//  - `instance` — one **`module`-scoped, non-`persistent`** provider
+//    instance (C2/C7), released when the container disposes it
+//    (`disposeModuleInstances`).
+//
+// **`persistent: true` records are not counted at all — neither acquire nor
+// release (task 6.2, H7).** A preserved persistent instance is deliberately
+// *not disposed* by an HMR re-activation (spec §17, H3/ADR-3: disposing a
+// store is how a store throws its state away), so its acquire has no
+// matching release on that path — while an ordinary `deactivate` *does*
+// dispose it, and would produce a release with no acquire if only the HMR
+// path were special-cased. The count could not balance either way, and it is
+// not a leak: the instance is parked in the resolver, reachable, and handed
+// to its successor. Excluding the record from the wrapper entirely keeps the
+// pairing symmetric on **every** path, which is what the H7 residual check
+// (`src/hmr/leak-check.ts`) needs to avoid reporting a false leak, once per
+// cycle forever, on H3's blessed pattern. The cost, stated plainly: a
+// persistent instance that genuinely leaked is invisible to these counters.
+// H7 names only listener and effect counts, and both are still fully
+// covered.
 //
 // **Deliberate scope limit on `instance`.** Only `module`-scoped instances
 // are counted. `singleton`-scoped instances owned by a module are *not*.
@@ -34,6 +51,19 @@
 // that owns H7's counters, not in the container fix. `transient` stays out
 // by C7 either way: the container never disposes a transient instance, so
 // its lifetime is the caller's and there is nothing here to balance.
+//
+// **Task 6.2 looked at lifting it and decided not to.** H7's own text names
+// "listener counts and effect counts" and nothing else, and the check that
+// actually runs after each HMR cycle measures what a module's *teardown*
+// failed to release — a question `ctx.on` and `ctx.effect` already answer
+// completely, since every `init` registration goes through one of them.
+// Counting singletons would add no H7 signal: #34 made
+// `disposeModuleInstances` dispose a module's singletons with it, and a
+// regression in *that* is a container bug with container tests. What it
+// would add is a changed meaning for every existing `leaks()` reader, in the
+// same PR that *narrows* the same counter for `persistent` above. Two
+// opposing changes to one report in one change is how a report stops being
+// trusted. The limit stays; the note stays with it.
 //
 // **Gating is structural, not a runtime flag.** When the kernel is not in
 // dev mode, `test-kernel.ts` does not install any of the wrappers below: the
@@ -85,7 +115,10 @@ export interface LeakReport {
   readonly listeners: number;
   /** Outstanding `ctx.effect` registrations across every module. */
   readonly effects: number;
-  /** Outstanding **`module`-scoped** provider instances — see the file header. */
+  /**
+   * Outstanding **`module`-scoped, non-`persistent`** provider instances —
+   * see the file header for both exclusions.
+   */
   readonly moduleInstances: number;
   /** True when every count is zero. */
   readonly balanced: boolean;
@@ -325,10 +358,10 @@ function callOriginalDispose<T>(record: ProviderRecord<T>, instance: T): void | 
 }
 
 /**
- * Wraps every **`module`-scoped** record in `records` so that construction
- * and disposal are counted against `moduleId`. Records of any other scope
- * are passed through by identity — see the file header for why `singleton`
- * is excluded today.
+ * Wraps every **`module`-scoped, non-`persistent`** record in `records` so
+ * that construction and disposal are counted against `moduleId`. Every other
+ * record is passed through by identity — see the file header for why
+ * `singleton` and `persistent: true` are both excluded.
  */
 export function instrumentRecords(
   moduleId: string,
@@ -336,7 +369,10 @@ export function instrumentRecords(
   counters: LeakCounters,
 ): AnyProviderRecord[] {
   return records.map((record) => {
-    if (record.scope !== 'module') {
+    // **H7 (task 6.2)**: `persistent` is excluded here, at the single point
+    // where both halves of the pair are created, so acquire and release can
+    // never be gated differently. See the file header.
+    if (record.scope !== 'module' || record.persistent) {
       return record;
     }
     return rebuildRecord(record, {

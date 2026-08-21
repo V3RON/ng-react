@@ -379,6 +379,55 @@ Discrepancies found in this document and how they were resolved:
   provider is registered"; what changed is that C7's prose was written as if a module's
   providers were registered for the lifetime of the app, which A4 and H2 make untrue. Both
   scopes are disposed in one merged reverse-construction order. See issue #34.
+- **§11 H5 — what a resolution graph edge's *consumer* is.** H5 says the
+  container records "which module actually resolved which token from which
+  provider". The obvious reading — C4's `requester`, the module the chain was
+  started on behalf of — is wrong for the cascade: C4 propagates the
+  *starting* module through every nested resolution, so
+  `kernel.get(OrderServiceToken)` records only `app → orders/OrderService`
+  and never records that `orders`' own instance was built out of a `payments`
+  gateway. **Resolved:** the consumer is the owner of the record one level up
+  the construction stack, falling back to the `requester` at the top of the
+  stack (where it is ADR-2's `'app'` for a resolution started outside any
+  module). The cascade needs "whose instances embed whose", which is the
+  construction stack, not the resolution context. C4 itself is untouched.
+  See issue #20.
+- **§11 H5 — a contribution collection read through `getAll` records no edge
+  to its contributors.** `ModuleContext.getAll` and `Container.getAll` take no
+  requester by design (each contribution resolves on behalf of its own owner,
+  C9), so a module that merely *reads* a collection is not attributable. That
+  is accepted rather than fixed: the declared-`dependsOn` cascade never
+  covered it either (a collection's consumer typically does not depend on its
+  contributors — that is the point of C5), so H5's narrowing does not lose a
+  guarantee that existed. C5's own reactivity (`subscribeAll`) is what keeps a
+  collection fresh across a re-activation. `deps: [allOf(Token)]` *is*
+  attributed, because it resolves inside a factory and therefore has a
+  construction stack. See issue #20.
+- **§11 H7 — "± the diff introduced by the edit" is not implementable as
+  stated, and the issue's proposed refinement is vacuous.** Issue #20 proposed
+  reporting when the post-cycle count exceeds the previous cycle's by more
+  than "the number of registrations the new `init` performed". Those are the
+  same number: teardown releases everything the module registered, so the
+  post-cycle count *is* what the new `init` registered, and the condition
+  reduces to "the previous cycle ended on a negative count". **Resolved:** the
+  check measures the **residual** — the outstanding count for each module in
+  the cascade *after the whole cascade has been disposed and before anything
+  is re-activated* — and reports a violation exactly when it is positive. The
+  baseline is structural (zero) rather than remembered, so an edit that
+  legitimately adds or removes registrations moves the post-cycle count and
+  never the residual. See `src/hmr/leak-check.ts` and issue #20.
+- **§11 H3/H7 — `persistent: true` instances are not counted by the leak
+  counters at all.** A preserved persistent instance is never disposed, so its
+  acquire has no release on the HMR path, while an ordinary `deactivate` does
+  dispose it and would produce a release with no acquire if only the HMR path
+  were excluded. The count cannot balance either way, and the instance is not
+  leaked — it is parked in the resolver and handed to its successor.
+  **Resolved:** `instrumentRecords` skips `persistent` records entirely, so
+  acquire and release stay paired on every path and H7 does not report a false
+  leak, once per cycle forever, on H3's blessed pattern. H7's own text names
+  only listener and effect counts, both of which remain fully covered. The
+  `singleton` exclusion noted since #34 stays as it is, for the reasons in
+  `src/testing/leak-counters.ts`. See issue #20.
 - **§7.2 C6 — a plain `provide` that loses to an `override: true`.** C6 makes two `provide`
   calls for one token a fatal error and names `override: true` as the explicit escape, but
   did not say what happens to the *loser*. The implementation made it fatal, so the

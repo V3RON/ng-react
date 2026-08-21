@@ -69,6 +69,40 @@ export interface ResolverOptions {
    * for the contract and the documented no-kernel fallback.
    */
   readonly getTopologicalIndex?: (moduleId: string) => number;
+  /**
+   * **H5, dev only**: records one edge of the true resolution graph —
+   * `consumerModuleId` resolved `tokenLabel` from a provider owned by
+   * `ownerModuleId` (C9).
+   *
+   * **`consumerModuleId` is *not* C4's `requester`, and the difference is
+   * the whole reason H5 works.** It is the module whose provider factory is
+   * asking *right now* — the owner of the record one level up the
+   * construction stack — falling back to the chain's `requester` (ADR-2's
+   * `'app'` for a resolution started outside any module) at the top of the
+   * stack, where there is no enclosing record.
+   *
+   * C4 deliberately propagates the *starting* module through every nested
+   * resolution, so that `MODULE_ID` means "who asked for this chain".
+   * Attributing edges that way would record `app → payments` for
+   * `kernel.get(OrderServiceToken)` and never record `orders` at all — even
+   * though it is `orders`' own `OrderService` instance that was built out of
+   * the `payments` gateway and is invalidated when that gateway is
+   * discarded. The cascade needs "whose instances embed whose", which is the
+   * construction stack, not the resolution context.
+   *
+   * **Omitted entirely in production**, not defaulted to a no-op. H5 calls
+   * the graph "a dev-only optimization"; a default callback would mean the
+   * resolution hot path allocated an argument list and made a call per
+   * resolution in a shipped app, so the field stays `undefined` and
+   * `construct` guards on it. The kernel supplies this only when its `dev`
+   * flag is on — see `hmr/resolution-graph.ts`.
+   *
+   * The resolver records; it never reads. It has no notion of a cascade and
+   * must not grow one: what the edges are *for* is `kernel.hotReplace`'s
+   * business, and keeping the recorder write-only is what stops a
+   * dev-only structure from becoming load-bearing for resolution itself.
+   */
+  readonly recordResolution?: (consumerModuleId: string, ownerModuleId: string, tokenLabel: string) => void;
 }
 
 /** One cached instance, enough context to dispose it later. */
@@ -110,6 +144,12 @@ export class Resolver {
   private readonly onError: ErrorReporter;
   private readonly disposeTimeoutMs: number;
   private readonly getTopologicalIndex: (moduleId: string) => number;
+  /**
+   * **H5**: `undefined` in production — see `ResolverOptions.recordResolution`.
+   * The one dev-only field on this class, and the only thing `construct`
+   * branches on that a production build does not need.
+   */
+  private readonly recordResolution: ResolverOptions['recordResolution'];
 
   // C2 singleton scope: one instance for the app lifetime **of the owning
   // module's activation** — see `disposeModuleInstances` for why H4 makes
@@ -169,6 +209,19 @@ export class Resolver {
   // progress on the current (synchronous) call stack.
   private readonly constructing = new Set<AnyProviderRecord>();
   private readonly stack: AnyProviderRecord[] = [];
+  /**
+   * **H5**: the C9 owner of each record in `stack`, in step with it.
+   *
+   * A parallel array rather than a field on `CachedInstance` or a lookup:
+   * `stack` holds records, and a record does not know its owner (C9
+   * provenance is assigned by the registry, which is exactly what keeps a
+   * module from self-reporting its identity). Maintained in the same
+   * `try`/`finally` as `stack`, so the two cannot drift.
+   *
+   * Empty and untouched in production, where `recordResolution` is
+   * `undefined` — the pushes are guarded by the same check as the recording.
+   */
+  private readonly ownerStack: string[] = [];
 
   constructor(
     private readonly registry: ProviderRegistry,
@@ -178,6 +231,8 @@ export class Resolver {
     this.onError = options.onError ?? (() => {});
     this.disposeTimeoutMs = options.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS;
     this.getTopologicalIndex = options.getTopologicalIndex ?? (() => 0);
+    // H5: deliberately *not* `?? (() => {})` — see the option's doc comment.
+    this.recordResolution = options.recordResolution;
   }
 
   /**
@@ -434,6 +489,26 @@ export class Resolver {
   private construct<T>(entry: RegisteredProvider<T>, requester: string): T {
     const record = entry.record as AnyProviderRecord;
 
+    // **H5**: record the edge *before* the cache lookup below, so that a
+    // resolution answered from cache counts too — a module holding a cached
+    // instance is as much a consumer as the one whose miss constructed it,
+    // and an HMR cascade that skipped the rest would leave them holding
+    // disposed objects. One `!== undefined` check when the recorder is
+    // absent, which is every production resolution.
+    //
+    // `requester` is C4's propagated context, so a nested dependency three
+    // levels down records an edge from the module that *started* the chain
+    // to the owner of the nested provider. That is the correct reading of
+    // H5 ("which module actually resolved which token from which
+    // provider"): the starting module's instance was built out of that
+    // nested instance and is invalidated with it.
+    if (this.recordResolution !== undefined) {
+      // The enclosing record's owner, or the chain's C4 requester at the top
+      // of the stack. See `ResolverOptions.recordResolution`.
+      const consumer = this.ownerStack[this.ownerStack.length - 1] ?? requester;
+      this.recordResolution(consumer, entry.owner, record.token.label);
+    }
+
     // C2 scope-based cache lookup — laziness (C3) plus referential
     // stability for singleton/module scopes; transient falls through and
     // always constructs fresh below.
@@ -458,6 +533,10 @@ export class Resolver {
 
     this.constructing.add(record);
     this.stack.push(record);
+    if (this.recordResolution !== undefined) {
+      // H5 only; see `ownerStack`. Guarded so production pays nothing.
+      this.ownerStack.push(entry.owner);
+    }
     try {
       // C4: `requester` is passed through unchanged to every dep — the
       // resolution context is the module that started the whole chain,
@@ -508,6 +587,9 @@ export class Resolver {
     } finally {
       this.constructing.delete(record);
       this.stack.pop();
+      if (this.recordResolution !== undefined) {
+        this.ownerStack.pop();
+      }
     }
   }
 

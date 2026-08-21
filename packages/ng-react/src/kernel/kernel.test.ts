@@ -312,7 +312,17 @@ describe('createKernel — registration (spec §6)', () => {
 
   it('an empty module list is a valid kernel', () => {
     const kernel = createKernel({ modules: [] });
-    expect(kernel.inspect()).toEqual({ modules: [], edges: [], providers: [], contributions: [] });
+    // **H5/G3**: `resolutionGraph` is present because a kernel with no
+    // explicit `dev` option is a dev kernel under vitest — empty, because
+    // nothing has resolved anything. `inspect().test.ts`'s G3 coverage and
+    // `resolution-cascade.test.ts` pin the present/absent pair directly.
+    expect(kernel.inspect()).toEqual({
+      modules: [],
+      edges: [],
+      providers: [],
+      contributions: [],
+      resolutionGraph: [],
+    });
   });
 
   it('options carry the A3 and ADR-1 defaults, overridable per kernel', () => {
