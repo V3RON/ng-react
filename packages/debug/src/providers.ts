@@ -15,7 +15,11 @@
 import { contribute, MODULE_ID, provide, recordEvaluation } from '@ng-react/kernel';
 import type { AnyProviderRecord } from '@ng-react/kernel';
 import { DiagnosticPanelToken } from '@app/auth/contract';
+import { DashboardCardToken } from '@app/dashboard/contract';
 import { DebugProbeToken } from './contract';
+// **Extensionless on purpose** — the bundler and `tsc` pick `screen.web.tsx`
+// or `screen.native.tsx`. Issue #52 §3; see `packages/dashboard/src/screen.web.tsx`.
+import { DebugCard } from './screen';
 import type { DebugProbe } from './contract';
 
 // **Acceptance criterion 9** — this file *is* evaluated: the providers thunk
@@ -38,6 +42,32 @@ export const providers: AnyProviderRecord[] = [
       moduleId: owner,
       label: 'Debug probe',
       describe: () => probe.describe(),
+    }),
+  }),
+
+  // **C5 — a dashboard card that is registered and then withdrawn.**
+  //
+  // This is the line that makes the dashboard demonstrate **F3** with no
+  // dashboard code involved. This file *is* evaluated and this contribution
+  // *is* registered — the providers thunk runs before `init`, and it is
+  // `init` that throws (see `lifecycle.ts`) — so the collection genuinely
+  // gains this card and then loses it when quarantine withdraws the module's
+  // registrations. "The card is absent" and "the card was never contributed"
+  // look identical from the outside, so the test that pins this asserts the
+  // *sequence* the collection's subscribers saw
+  // (`apps/react/src/shell/dashboard.test.tsx`), which is the only assertion
+  // that can tell them apart.
+  //
+  // **No menu entry**, on purpose: a menu row for a screen that cannot be
+  // reached would be a worse demonstration than a missing card, and issue #52
+  // asks for the card only.
+  contribute(DashboardCardToken, {
+    deps: [MODULE_ID],
+    factory: (owner) => ({
+      id: 'debug/probe',
+      title: `Debug probe (${owner})`,
+      order: 90,
+      component: DebugCard,
     }),
   }),
 ];

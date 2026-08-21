@@ -11,17 +11,23 @@
 import { contribute, defineStore, MODULE_ID, provide, recordEvaluation } from '@ng-react/kernel';
 import type { AnyProviderRecord, Store } from '@ng-react/kernel';
 import { DiagnosticPanelToken, SessionServiceToken } from '@app/auth/contract';
-import { RouteConfigToken } from '@app/nav/contract';
 import type { SessionService } from '@app/auth/contract';
+import { DashboardCardToken } from '@app/dashboard/contract';
+import { MenuEntryToken, RouteConfigToken } from '@app/nav/contract';
 import { PaymentGatewayToken } from '@app/payments/contract';
 import type { PaymentGateway } from '@app/payments/contract';
 import { OrderNotesToken, OrderServiceToken } from './contract';
 import type { OrderNote, OrderService, PlacedOrder } from './contract';
-import { OrdersScreen } from './screen';
+// **Extensionless on purpose** — the bundler and `tsc` pick `screen.web.tsx`
+// or `screen.native.tsx`. Issue #52 §3; see `packages/dashboard/src/screen.web.tsx`.
+import { OrdersCard, OrdersScreen } from './screen';
 
 // **Acceptance criterion 9** — proves this file was not evaluated before
 // `kernel.activate(OrdersModule)`.
 recordEvaluation('orders', 'orders/providers.ts');
+
+/** This module's own route, named once and used by the route and the menu entry. */
+const ORDERS_PATH = '/orders/detail';
 
 function createOrderService(
   gateway: PaymentGateway,
@@ -112,6 +118,31 @@ export const providers: AnyProviderRecord[] = [
   // *reaches* this one therefore cannot live here — see the app shell — and
   // that split is the honest shape of lazy routing, not a workaround.
   contribute(RouteConfigToken, {
-    factory: () => ({ path: '/orders/detail', component: OrdersScreen }),
+    factory: () => ({ path: ORDERS_PATH, component: OrdersScreen }),
+  }),
+
+  // **C5 — the menu entry, and it points at this module's own route.**
+  //
+  // That is the honest choice rather than a convenience: the entry exists only
+  // while `orders` is active, so it appears when the module activates and is
+  // withdrawn by logout, which is exactly what the hamburger is here to show.
+  // The route it names is contributed by the line above and disappears with
+  // it, so the menu can never offer a destination that does not exist. The
+  // *entry* route `/orders` — the one that triggers the activation in the
+  // first place — belongs to the shell, for the reason `shell/module.ts`
+  // explains at length.
+  //
+  // No `owner` field: **C9** forbids it. No `component` field: a menu entry is
+  // data, which is what lets React Navigation's drawer render this same
+  // collection on native (issue #53).
+  contribute(MenuEntryToken, {
+    factory: () => ({ id: 'orders/detail', title: 'Orders', path: ORDERS_PATH, order: 10 }),
+  }),
+
+  // **C5 — the dashboard card.** One `contribute` call carrying both the
+  // metadata and the component; `OrdersCard` is whichever platform's
+  // implementation the resolver picked (issue #52 §3).
+  contribute(DashboardCardToken, {
+    factory: () => ({ id: 'orders/recent', title: 'Recent orders', order: 10, component: OrdersCard }),
   }),
 ];

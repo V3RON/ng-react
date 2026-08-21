@@ -22,12 +22,17 @@
 import { createKernel, createViteHmrAdapter } from '@ng-react/kernel';
 import type { Kernel, ModuleDescriptor, ModuleRef, ViteHotContext } from '@ng-react/kernel';
 import { AuthModule } from '@app/auth/contract';
+import { DashboardModule } from '@app/dashboard/contract';
 import { DebugModule } from '@app/debug/contract';
 import { NavModule } from '@app/nav/contract';
 import { OrdersModule } from '@app/orders/contract';
 import { PaymentsModule } from '@app/payments/contract';
 import { acceptHotUpdate as acceptAuthHotUpdate, module as authModule } from '@app/auth/module';
 import type { ModuleHotContext } from '@app/auth/module';
+import {
+  acceptHotUpdate as acceptDashboardHotUpdate,
+  module as dashboardModule,
+} from '@app/dashboard/module';
 import { acceptHotUpdate as acceptDebugHotUpdate, module as debugModule } from '@app/debug/module';
 import { acceptHotUpdate as acceptOrdersHotUpdate, module as ordersModule } from '@app/orders/module';
 import {
@@ -64,6 +69,14 @@ export const appModules: readonly ModuleDescriptor[] = [
   // the navigator has to be able to render the route that triggers the first
   // lazy activation; `shell` is eager because it *owns* that route.
   navModule,
+  // **Issue #52**: the dashboard, an ordinary module owning an ordinary
+  // collection token. Eager for the same reason `nav` is — a surface has to be
+  // running before anything can be contributed *to* it and seen — and with no
+  // privileges of any kind. Registered after `nav` because it contributes a
+  // route and a menu entry to `nav`'s tokens; that is a readability choice
+  // only, since a contribution creates no `dependsOn` edge (spec §17, M2) and
+  // the kernel would have accepted either order.
+  dashboardModule,
   shellModule,
 ];
 
@@ -74,6 +87,7 @@ const appModuleRefs: readonly ModuleRef[] = [
   PaymentsModule,
   OrdersModule,
   NavModule,
+  DashboardModule,
   ShellModule,
 ];
 
@@ -163,6 +177,7 @@ export function createAppKernel(
   acceptPaymentsHotUpdate(kernel, hotFor('payments'));
   acceptOrdersHotUpdate(kernel, hotFor('orders'));
   acceptNavHotUpdate(kernel, hotFor('nav'));
+  acceptDashboardHotUpdate(kernel, hotFor('dashboard'));
   // No `acceptHotUpdate` for the shell: it is app source, not a module
   // package, so Vite's ordinary React Fast Refresh already covers its screens
   // (**H1**) and its descriptor is re-evaluated with the composition root.

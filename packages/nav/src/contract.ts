@@ -88,3 +88,67 @@ export const RouterToken = createToken<Router>('nav/Router');
  * container can carry, exactly as `RouteConfig.component` already is.
  */
 export const NavigatorToken = createToken<ComponentType>('nav/Navigator');
+
+/**
+ * One navigation-menu item, as a feature module declares it.
+ *
+ * **There is deliberately no `owner` field**, for the same reason
+ * `RouteConfig` has none: C9 requires provenance to be kernel-assigned and
+ * "never passed by the module". Whatever renders this collection reads the
+ * real owner out of `kernel.inspect()`, aligned by position with
+ * `getAll`/`useServiceAll` — see `navigator.tsx`'s `routeOwners`.
+ *
+ * **There is also deliberately no `component` field.** A menu item is pure
+ * data — a label and a destination — and that is what makes this collection
+ * render unchanged on React Native, where the item is a drawer row rather
+ * than a `<button>`. The screen a `path` leads to is a `RouteConfig`, and
+ * *that* is where the platform-specific component lives (see the platform
+ * note in `packages/dashboard/src/screen.web.tsx`).
+ */
+export interface MenuEntry {
+  /** Stable across renders and re-activations: the React key, and what tests name. */
+  readonly id: string;
+  /** What the item reads as. */
+  readonly title: string;
+  /** The `RouteConfig.path` this item navigates to. Not necessarily one this module owns. */
+  readonly path: string;
+  /**
+   * **Why this exists, given that C5 already orders contributions.**
+   *
+   * C5's order is `(module topological index, declaration index)`. That is a
+   * fact about the *dependency graph*, and it is exactly right for a route
+   * table, which nobody reads top-to-bottom. A menu is read top-to-bottom by
+   * a person, so its order is a product decision — and under C5 alone the
+   * only way to move "Payments" above "Orders" would be to add a `dependsOn`
+   * edge that does not exist, i.e. to lie to the kernel about the module
+   * graph to move a row in a list.
+   *
+   * So: sort by `(order ?? Infinity, C5 order)`. Entries without an `order`
+   * keep C5's order and sort after every entry that has one, and ties inside
+   * one `order` value fall back to C5 — never to an unstable comparison.
+   * The tie is pinned by `apps/react/src/shell/menu.test.tsx`.
+   *
+   * **The comparison is duplicated, and that is a known cost.** The same
+   * `(order ?? Infinity, C5 index)` rule is applied to this collection by the
+   * web menu and to `dashboard/DashboardCard` by the dashboard's own screen,
+   * and issue #53's drawer will need it a third time. It cannot be shared:
+   * **B2** allows a contract to export only types, `createToken()` calls and
+   * one `moduleRef()`, so a comparator function has no home here, and the
+   * package has exactly two subpath exports (spec §4) so an implementation
+   * file is unreachable from outside. Sharing it would mean turning it into a
+   * *service* behind a token — which is spec 03's call to make, not this
+   * PR's. Recorded rather than worked around.
+   */
+  readonly order?: number;
+}
+
+/**
+ * **C5** — the menu collection. Owned by this module, contributed to by
+ * feature modules, and consumed by whatever chrome the host app has: a
+ * `<details>` hamburger on web (`apps/react/src/shell/menu.tsx`), a React
+ * Navigation drawer on native (issue #53). Neither the kernel nor this module
+ * knows which modules exist.
+ *
+ * **C1**: `moduleId/Name` labels (ADR-8).
+ */
+export const MenuEntryToken = createToken<MenuEntry>('nav/MenuEntry');

@@ -4,6 +4,26 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
+    // **The `tsc` half of issue #52 §3's platform decision.** A module that
+    // owns a component writes it twice — `screen.web.tsx` and
+    // `screen.native.tsx` — and every other file in the package imports the
+    // extensionless `./screen`, so one `contribute()` call yields a DOM
+    // component on web and a React Native component on native. `tsc` finds the
+    // right one only with this: `moduleSuffixes` makes every resolution try
+    // `X.web` before `X`. It is load-bearing — remove it and `./screen` is
+    // TS2307 in four packages — and it works with `moduleResolution: bundler`,
+    // which is worth stating because the option predates that mode.
+    //
+    // **This file is the *web* baseline.** Issue #53's native app gets its own
+    // `tsconfig.json` with `moduleSuffixes: [".native", ""]`; nothing here has
+    // to change for it. The `""` entry is what keeps every file without a
+    // platform sibling resolving normally, and omitting it would break every
+    // import in the workspace.
+    //
+    // The other three resolvers that have to agree are configured in
+    // `apps/react/vite.config.ts`, `vitest.config.ts` and
+    // `packages/eslint-config-modules/src/index.js`. Change one, change all.
+    "moduleSuffixes": [".web", ""],
     "resolveJsonModule": true,
     "allowImportingTsExtensions": false,
     "isolatedModules": true,

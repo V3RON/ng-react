@@ -56,6 +56,9 @@ importers:
       '@app/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@app/dashboard':
+        specifier: workspace:*
+        version: link:../../packages/dashboard
       '@app/debug':
         specifier: workspace:*
         version: link:../../packages/debug
@@ -93,6 +96,9 @@ importers:
 
   packages/auth:
     dependencies:
+      '@app/nav':
+        specifier: workspace:*
+        version: link:../nav
       '@ng-react/kernel':
         specifier: workspace:*
         version: link:../ng-react
@@ -106,14 +112,40 @@ importers:
         specifier: workspace:*
         version: link:../ng-react
 
+  packages/dashboard:
+    dependencies:
+      '@app/nav':
+        specifier: workspace:*
+        version: link:../nav
+      '@ng-react/kernel':
+        specifier: workspace:*
+        version: link:../ng-react
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.0
+        version: 19.2.18
+
   packages/debug:
     dependencies:
       '@app/auth':
         specifier: workspace:*
         version: link:../auth
+      '@app/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
       '@ng-react/kernel':
         specifier: workspace:*
         version: link:../ng-react
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.0
+        version: 19.2.18
 
   packages/eslint-config-modules:
     dependencies:
@@ -170,6 +202,9 @@ importers:
       '@app/auth':
         specifier: workspace:*
         version: link:../auth
+      '@app/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
       '@app/nav':
         specifier: workspace:*
         version: link:../nav
@@ -192,6 +227,9 @@ importers:
       '@app/auth':
         specifier: workspace:*
         version: link:../auth
+      '@app/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
       '@app/nav':
         specifier: workspace:*
         version: link:../nav

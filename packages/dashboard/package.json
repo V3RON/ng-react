@@ -1,5 +1,5 @@
 {
-  "name": "@app/orders",
+  "name": "@app/dashboard",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,10 +12,7 @@
     "typecheck": "tsc --noEmit --pretty"
   },
   "dependencies": {
-    "@app/auth": "workspace:*",
-    "@app/dashboard": "workspace:*",
     "@app/nav": "workspace:*",
-    "@app/payments": "workspace:*",
     "@ng-react/kernel": "workspace:*",
     "react": "^19.2.8"
   },

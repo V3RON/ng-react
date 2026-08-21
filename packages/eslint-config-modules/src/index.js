@@ -73,6 +73,44 @@ function buildConfig(defaultSeverity) {
             // Resolve `@types/*` for packages that ship no TS source, so
             // `no-unresolved` does not fire on type-only imports.
             alwaysTryTypes: true,
+            // **Platform file extensions (issue #52 §3), and the reason this
+            // list has to exist at all.**
+            //
+            // A module that owns a component writes `screen.web.tsx` and
+            // `screen.native.tsx` and every other file in the package imports
+            // the extensionless `./screen`. `tsconfig.base.json` teaches
+            // `tsc` to find it with `moduleSuffixes: ['.web', '']` — and
+            // **this resolver ignores `moduleSuffixes` entirely**. Measured,
+            // not assumed: with `moduleSuffixes` set and `tsc` completely
+            // green, `import-x/no-unresolved` still reported
+            // "Unable to resolve path to module './screen'" for every such
+            // import in the workspace. A resolver that reads `tsconfig` for
+            // `paths` and `exports` does not read it for this.
+            //
+            // So the suffixes are restated in the resolver's own vocabulary.
+            // The tail is the resolver's default list, restated because
+            // supplying `extensions` replaces it — drop `.d.ts` or `.json`
+            // and `no-unresolved` turns into workspace-wide noise.
+            //
+            // **`.web` only, deliberately.** The workspace's only application
+            // is the web demo, so a `screen.native.tsx` with no `.web`
+            // sibling *should* be an unresolved import here. Issue #53 adds a
+            // native app; whoever does that decides whether lint gains a
+            // second, platform-scoped config or whether `.native` joins this
+            // list — and either way must say which files each one judges.
+            extensions: [
+              '.web.tsx',
+              '.web.ts',
+              '.tsx',
+              '.ts',
+              '.d.ts',
+              '.jsx',
+              '.js',
+              '.mjs',
+              '.cjs',
+              '.json',
+              '.node',
+            ],
           }),
         ],
         // A TS-aware resolver alone is NOT enough to make `no-cycle` fire, and
@@ -86,7 +124,17 @@ function buildConfig(defaultSeverity) {
         // `no-cycle` stays just as silent as before, which is the most
         // misleading possible state. Both settings are load-bearing; verified
         // by removing each one independently.
-        'import-x/extensions': ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+        //
+        // `.web.ts`/`.web.tsx` are in the list for the same reason every other
+        // entry is: without them `ExportMap.for()` returns `null` for a
+        // platform file and `no-cycle` stops walking at its door — so a cycle
+        // routed through a `screen.web.tsx` would be invisible while the rule
+        // reported nothing, which is #43's failure mode exactly. They are
+        // *additional* entries and not replacements: `hasValidExtension` tests
+        // the whole trailing string, and `screen.web.tsx` also ends in `.tsx`,
+        // so this pair is belt-and-braces rather than load-bearing today. Kept
+        // because the cheap version of #43 was believing that.
+        'import-x/extensions': ['.ts', '.tsx', '.web.ts', '.web.tsx', '.js', '.jsx', '.mjs', '.cjs'],
       },
       rules: {
         // B1

@@ -132,7 +132,12 @@ describe('acceptance criterion 8 — the boundary preset rejects all three', () 
       'module.test.ts',
       'module.ts',
       'providers.ts',
-      'screen.tsx',
+      // Two screens since #52: `screen.web.tsx` and its `.native` sibling.
+      // Both are linted, which is deliberate — a platform file that only the
+      // *other* platform's build ever compiles is exactly where an
+      // unnoticed boundary violation would live.
+      'screen.native.tsx',
+      'screen.web.tsx',
     ]);
     for (const result of results) {
       expect({ file: result.filePath, messages: result.messages }).toEqual({

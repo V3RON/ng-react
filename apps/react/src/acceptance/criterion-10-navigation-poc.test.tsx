@@ -52,7 +52,10 @@ async function mountApp(): Promise<{ kernel: Kernel; log: LifecycleLog }> {
   // proves `useServiceAll` re-rendered the navigator when the collection
   // changed (**C5/R3**) rather than the navigator having read it once.
   await waitFor(() => {
-    expect(visibleRoutes()).toEqual(['/', '/orders', '/payments']);
+    // `/dashboard` is contributed by `@app/dashboard` (#52), which is eager
+    // and therefore able to contribute the route that reaches it — unlike a
+    // lazy feature module (spec §17).
+    expect(visibleRoutes()).toEqual(['/dashboard', '/', '/orders', '/payments']);
   });
   return { kernel, log };
 }
@@ -154,6 +157,7 @@ describe('acceptance criterion 10 — a PoC navigation module on public primitiv
     expect(owners).toEqual({
       '/payments/drafts': 'payments',
       '/orders/detail': 'orders',
+      '/dashboard': 'dashboard',
       '/': 'shell',
       '/orders': 'shell',
       '/payments': 'shell',
@@ -173,8 +177,15 @@ describe('acceptance criterion 10 — a PoC navigation module on public primitiv
       .inspect()
       .contributions.filter((row) => row.token === 'nav/RouteConfig')
       .map((row) => row.owner);
-    expect(fromCollection).toEqual(['/payments/drafts', '/orders/detail', '/', '/orders', '/payments']);
-    expect(fromInspect).toEqual(['payments', 'orders', 'shell', 'shell', 'shell']);
+    expect(fromCollection).toEqual([
+      '/dashboard',
+      '/payments/drafts',
+      '/orders/detail',
+      '/',
+      '/orders',
+      '/payments',
+    ]);
+    expect(fromInspect).toEqual(['dashboard', 'payments', 'orders', 'shell', 'shell', 'shell']);
   });
 
   it('C5/F3: logout withdraws the disposed modules\' routes and leaves the shell\'s', async () => {

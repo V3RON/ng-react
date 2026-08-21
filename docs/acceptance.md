@@ -314,6 +314,20 @@ feature modules contribute their own `/orders/detail` and `/payments/drafts` onc
 kernel primitive is missing — the spec's model is right and only §15.10's silence on this is
 misleading.
 
+### Extended by #52 to two more surfaces
+
+Criterion 10 asks whether *a* subsystem module can be built on public primitives only. Issue #52
+adds a second and a third surface on the same primitives, and neither needed a kernel change
+either: a **menu** collection (`nav/MenuEntry`, rendered by `apps/react/src/shell/menu.tsx`) and a
+**dashboard** module (`@app/dashboard`, owning `dashboard/DashboardCard` and rendering it). Both
+are `useServiceAll` + `inspect()` provenance + `kernel.activate`, exactly as the navigator is.
+Evidence: `apps/react/src/shell/menu.test.tsx`, `apps/react/src/shell/dashboard.test.tsx`,
+`packages/dashboard/src/module.test.ts`.
+
+`@app/dashboard` was **generated with `pnpm create-module`** and the emitted package passed
+`pnpm verify` unmodified — no generator bugs found, which is itself the first clean result the
+generator has had against a new module.
+
 ### Residual risk, recorded rather than fixed
 
 The navigator aligns `useServiceAll(RouteConfigToken)` with
@@ -325,6 +339,14 @@ contributing several rows to one token (HANDOFF §6). The alignment is pinned by
 `shell`, which contributes **three** routes and is therefore the case where it could drift.
 There is nothing stronger to align on: the kernel exposes no per-contribution identity, and
 adding one is the kernel change this criterion forbids.
+
+The same alignment now carries the menu and the dashboard, and #52 sharpened one point about it:
+both of those surfaces **sort** their collection for display (`(order ?? Infinity, C5 index)`),
+so they must pair each row with its owner *before* sorting. Pairing afterwards attributes every
+row to whichever module lands at its new position — a bug that is invisible while every module
+contributes one row and the display order happens to match the topological one. Both tests are
+written against an `order` that genuinely reorders the list, and both are mutation-checked:
+pairing after the sort fails exactly one test each and nothing else.
 
 ---
 

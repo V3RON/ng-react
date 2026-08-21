@@ -13,20 +13,23 @@ import { useKernel, useModule, useServiceAll, useServiceOptional } from '@ng-rea
 import type { ModuleRef, Store } from '@ng-react/kernel';
 import { AuthErrorLogToken, AuthModule, DiagnosticPanelToken } from '@app/auth/contract';
 import type { AuthErrorEntry } from '@app/auth/contract';
+import { DashboardModule } from '@app/dashboard/contract';
 import { DebugModule } from '@app/debug/contract';
 import { NavigatorToken, NavModule } from '@app/nav/contract';
 import { OrdersModule } from '@app/orders/contract';
 import { PaymentsModule } from '@app/payments/contract';
+import { AppMenu } from './shell/menu';
 import type { LifecycleLog } from './lifecycle-log';
 import './App.css';
 
-/** The four modules, in the order the composition root registers them. */
+/** Every module, in the order the composition root registers them. */
 const MODULE_ROWS: readonly { readonly ref: ModuleRef; readonly note: string }[] = [
   { ref: AuthModule, note: 'eager, critical — owns the session and the F4 error sink' },
   { ref: DebugModule, note: 'eager, non-critical — init throws on purpose (F1/F3)' },
   { ref: PaymentsModule, note: 'lazy — activated transitively by orders (A1)' },
   { ref: OrdersModule, note: 'lazy — dependsOn [auth, payments]' },
   { ref: NavModule, note: 'eager — the PoC navigation module (criterion 10)' },
+  { ref: DashboardModule, note: 'eager — owns the dashboard/DashboardCard collection (#52)' },
 ];
 
 /** Subscribes to any `defineStore` (**H3**) the React way. */
@@ -208,13 +211,21 @@ export function App(props: { readonly log: LifecycleLog }): ReactElement {
         </p>
       </section>
 
+      {/* **Issue #52** — the menu is chrome, so it lives in the app and reads
+          `nav`'s collection directly. It is gated on the same `Navigator`
+          check below because both need `nav` to be active: without it
+          `RouterToken` has no provider and `useService` would throw C8's
+          resolution error into the render. */}
       {Navigator === undefined ? (
         <p data-testid="navigator-unavailable">
           <code>nav/Navigator</code> has no provider — <code>nav</code> is{' '}
           <code>{navState.status}</code>.
         </p>
       ) : (
-        <Navigator />
+        <>
+          <AppMenu />
+          <Navigator />
+        </>
       )}
 
       <ContributionPanel />
