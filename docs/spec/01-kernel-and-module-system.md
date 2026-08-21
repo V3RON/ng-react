@@ -437,3 +437,23 @@ Discrepancies found in this document and how they were resolved:
   record is **superseded, not rejected**; two *plain* provides remain fatal and still name
   both modules. Both registration orders now produce byte-identical registry state, and the
   superseded row is visible in `inspect()` as `overriddenBy`. See issue #37.
+- **§13 B3 — "`import/no-cycle` runs across the workspace" needs two settings, not one, and
+  the natural check for the first one passes while the rule is still dead.** The preset
+  originally configured `createNodeResolver()`, which applies Node's algorithm and does not
+  resolve `.ts`. Since `allowImportingTsExtensions: false` makes every internal import
+  extensionless TypeScript, nothing resolved, `no-cycle` had no graph to walk, and it silently
+  passed a planted two-file cycle for the whole of stage 7. Swapping in
+  `createTypeScriptImportResolver` fixes resolution — and is **not sufficient**: `no-cycle`
+  walks past the first hop through `ExportMap.for()`, which returns `null` for any path failing
+  `hasValidExtension()`, whose default allowlist is `['.js', '.mjs', '.cjs']`. In that
+  intermediate state `import-x/no-unresolved` is clean workspace-wide while the cycle probe
+  still exits 0 — the most misleading possible reading. **Resolved:** both
+  `import-x/resolver-next` (TypeScript-aware) and `import-x/extensions` are load-bearing, each
+  verified by independent removal, and `no-unresolved` is enabled as the alarm for the resolver
+  silently dying. The regression test lints real files through the real root config rather than
+  using `RuleTester`: what broke was everything that must be true *before* the rule sees a
+  graph. See issues #43 and #44.
+- **§13 — the preset's package name.** §13 calls it `@app/eslint-config-modules`; it ships as
+  `@ng-react/eslint-config-modules`, per ADR-8 (`@app/*` is the scope for *application* module
+  packages, and a shared lint preset is not one). Cosmetic, recorded rather than fixed in the
+  spec text. See PR #44.
