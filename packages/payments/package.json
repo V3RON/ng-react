@@ -1,5 +1,5 @@
 {
-  "name": "__pkg__",
+  "name": "@app/payments",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit --pretty"
   },
   "dependencies": {
-    "__dependsOnDependencies__": "workspace:*",
+    "@app/auth": "workspace:*",
     "@ng-react/kernel": "workspace:*"
   }
 }

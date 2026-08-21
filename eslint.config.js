@@ -45,4 +45,31 @@ export default tseslint.config(
   // spec 03's module packages), so this is expected to be near-silent
   // against today's tree; see the PR body for the real-world check.
   ...ngReactModules.configs.recommended,
+  {
+    // **B1/C6 — `compositionRoot` is an option, not a convention.**
+    //
+    // Both rules below default to `['**/composition-root.{ts,tsx}',
+    // '**/main.tsx']`, which is a sensible default and *not* this workspace's
+    // answer: `apps/react/src/main.tsx` is the entry point, not the
+    // composition root, and it must be held to the same rule as a component.
+    // Pointing the glob at the one real file is what turns B1 from a
+    // configured rule into an enforced one — see the PR body for the verbatim
+    // error a probe import produced.
+    //
+    // `testGlobs` is deliberately left at its default on the second rule:
+    // C6 names "the composition root and tests" together, and `createTestKernel`
+    // overrides are exactly the sanctioned use.
+    name: 'ng-react/composition-root',
+    files: ['**/*.ts', '**/*.tsx'],
+    rules: {
+      'ng-react-modules/module-entry-only-in-composition-root': [
+        'error',
+        { compositionRoot: ['**/apps/react/src/composition-root.ts'] },
+      ],
+      'ng-react-modules/no-override-outside-composition-root': [
+        'error',
+        { compositionRoot: ['**/apps/react/src/composition-root.ts'] },
+      ],
+    },
+  },
 );

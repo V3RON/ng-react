@@ -10,6 +10,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@app/auth": "workspace:*",
+    "@app/debug": "workspace:*",
+    "@app/orders": "workspace:*",
+    "@app/payments": "workspace:*",
     "@ng-react/kernel": "workspace:*",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

@@ -127,6 +127,41 @@ describe('generateModule — options', () => {
     );
   });
 
+  it('D3: --depends-on also reaches package.json, or pnpm never links the dependency', () => {
+    // Found by task 8.1: the emitted `@app/orders` imported
+    // `@app/auth/contract` in `module.ts` while its manifest declared only
+    // `@ng-react/kernel`, so `pnpm install` linked nothing and the untouched
+    // package failed `pnpm verify` twice over — `tsc` TS2307 and
+    // `import-x/no-unresolved`, both pointing at a line the generator wrote.
+    // The import half and the manifest half are one feature; assert both.
+    const withDeps = generateModule({ id: 'orders', dependsOn: ['auth', 'payments'] });
+    const manifest: unknown = JSON.parse(
+      withDeps.files.find((file) => file.path.endsWith('package.json'))?.contents ?? '{}',
+    );
+    expect((manifest as { dependencies: Record<string, string> }).dependencies).toEqual({
+      '@app/auth': 'workspace:*',
+      '@app/payments': 'workspace:*',
+      '@ng-react/kernel': 'workspace:*',
+    });
+
+    // The scope follows `--scope`, because that is what the contract imports
+    // in `module.ts` are rendered with.
+    const scoped = generateModule({ id: 'orders', scope: '@acme', dependsOn: ['auth'] });
+    const scopedManifest: unknown = JSON.parse(
+      scoped.files.find((file) => file.path.endsWith('package.json'))?.contents ?? '{}',
+    );
+    expect((scopedManifest as { dependencies: Record<string, string> }).dependencies).toEqual({
+      '@acme/auth': 'workspace:*',
+      '@ng-react/kernel': 'workspace:*',
+    });
+
+    // And a module with no dependencies keeps the manifest it always had —
+    // the placeholder line goes with the line, not as an empty key.
+    const without = generateModule({ id: 'orders' });
+    const bare = without.files.find((file) => file.path.endsWith('package.json'))?.contents ?? '';
+    expect(bare).toContain('  "dependencies": {\n    "@ng-react/kernel": "workspace:*"\n  }');
+  });
+
   it('--scope and --dir move the package without changing the module id', () => {
     const generated = generateModule({ id: 'orders', scope: '@acme', dir: 'features' });
     expect(generated.packageName).toBe('@acme/orders');

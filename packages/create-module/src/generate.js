@@ -47,6 +47,12 @@ const TEMPLATE_FILES = Object.freeze([
  */
 const LINE_PLACEHOLDERS = Object.freeze({
   '// __dependsOnImports__': '__dependsOnImports__',
+  // The same trick in JSON, where a comment is not available: the line is a
+  // syntactically valid (if meaningless) dependency entry, so the template
+  // stays parseable, and it is dropped whole when the module has no
+  // dependencies. See `__dependsOnDependencies__` below for why it exists.
+  '"__dependsOnDependencies__": "workspace:*",': '__dependsOnDependencies__',
+  '// __dependencyStubs__': '__dependencyStubs__',
 });
 
 /** @typedef {{ readonly path: string, readonly contents: string }} GeneratedFile */
@@ -129,6 +135,29 @@ export function generateModule(options) {
     __dependsOnImports__: dependsOn
       .map((dep) => `import { ${toRefName(dep)} } from '${scope}/${dep}/contract';`)
       .join('\n'),
+    // **D3 has a package-manager half, and omitting it makes the emitted
+    // package fail `pnpm verify` on the spot.** `--depends-on orders` emits
+    // `import { OrdersModule } from '@app/orders/contract'` into `module.ts`;
+    // without a matching `dependencies` entry pnpm never links the
+    // dependency into this package's `node_modules`, so `tsc` reports TS2307
+    // and `import-x/no-unresolved` reports the same import — two failures
+    // whose cause is a missing line in a file the module author never
+    // looked at. Sorted before `@ng-react/kernel` because `@app` < `@ng`.
+    __dependsOnDependencies__: dependsOn
+      .map((dep) => `    "${scope}/${dep}": "workspace:*",`)
+      .join('\n'),
+    // **The emitted test cannot register a `dependsOn` module by importing
+    // it.** `createTestKernel` builds a real graph, so a `dependsOn` ref
+    // whose descriptor is missing is a fatal `UnknownModuleError` (**G2**) —
+    // and the descriptor is exactly what this package may not import, since
+    // `<pkg>/module` belongs to the composition root (**B1**). Also found by
+    // task 8.1: before this, every generated module with `--depends-on`
+    // emitted a test that threw on its first line.
+    __dependencyStubs__: dependsOn.length === 0 ? '' : renderDependencyStubs(dependsOn, scope),
+    // Widens the emitted test's existing `@ng-react/kernel` import rather
+    // than adding a second one for the same package.
+    __defineModuleImport__: dependsOn.length === 0 ? '' : 'defineModule, ',
+    __modulesUnderTest__: dependsOn.length === 0 ? 'module' : '...dependencyStubs, module',
   };
 
   const files = TEMPLATE_FILES.map((relativePath) => ({
@@ -137,6 +166,40 @@ export function generateModule(options) {
   }));
 
   return { id, packageName, dir: packageDir, files: Object.freeze(files) };
+}
+
+/**
+ * The emitted test's dependency-stub block: the imports it needs and the
+ * `dependencyStubs` array `createTestKernel` is handed alongside `module`.
+ *
+ * A *stub*, not the real descriptor, and that is the right unit test as well
+ * as the only legal one: activating the real dependency would activate its
+ * providers and its `init` too, so the module under test would no longer be
+ * the only thing being tested. Anything the module genuinely needs from a
+ * dependency belongs in `overrides` (**C6**), which is what R4 is for.
+ *
+ * @param {readonly string[]} dependsOn
+ * @param {string} scope
+ * @returns {string}
+ */
+function renderDependencyStubs(dependsOn, scope) {
+  return [
+    ...dependsOn.map((dep) => `import { ${toRefName(dep)} } from '${scope}/${dep}/contract';`),
+    '',
+    '// **G2 + B1**: a `dependsOn` ref whose descriptor was never registered is a',
+    '// fatal registration error, and this package may not import the real one —',
+    '// `<pkg>/module` is reserved for the composition root. So each dependency is',
+    "// stood up here as an empty descriptor built from the ref its *contract*",
+    '// exports, which is the one thing this package is allowed to import (D3).',
+    '// Give a dependency real behaviour through `overrides` (C6), never by',
+    '// registering its actual descriptor: that would be testing it too.',
+    'const dependencyStubs: ModuleDescriptor[] = [',
+    ...dependsOn.map(
+      (dep) =>
+        `  defineModule({ id: ${toRefName(dep)}, dependsOn: [], load: 'lazy', critical: false }),`,
+    ),
+    '];',
+  ].join('\n');
 }
 
 /**
