@@ -9,8 +9,7 @@
 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AppKernel } from '@ng-react/kernel';
-import { App } from './App';
+import { AppRoot } from './shell/startup';
 import { createAppKernel } from './composition-root';
 
 const container = document.getElementById('root');
@@ -20,10 +19,10 @@ if (!container) throw new Error('Root container #root not found');
 // inside each module's own `acceptHotUpdate` — never here.
 const { kernel, log } = createAppKernel();
 
+// The startup gate lives in `<AppRoot>`, with `<AppKernel>` and `<App>`, so
+// that the tree this file mounts is the same one a test can render.
 createRoot(container).render(
   <StrictMode>
-    <AppKernel kernel={kernel}>
-      <App log={log} />
-    </AppKernel>
+    <AppRoot kernel={kernel} log={log} />
   </StrictMode>,
 );

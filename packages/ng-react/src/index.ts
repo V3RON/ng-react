@@ -70,6 +70,9 @@ export { ErrorSinkToken } from './kernel/failure';
 export type { ModuleState } from './react/hooks';
 export { AppKernel, ModuleScope, useKernel, useModuleScope } from './react/context';
 export { useModule, useService, useServiceAll, useServiceOptional } from './react/hooks';
+export type { KernelStartupState } from './react/startup-store';
+export type { KernelStartupGateProps } from './react/startup';
+export { KernelStartupGate, useKernelStartup } from './react/startup';
 
 export type { TestKernel, TestKernelOptions, CollectedError } from './testing/test-kernel';
 export { createTestKernel } from './testing/test-kernel';

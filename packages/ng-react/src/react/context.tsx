@@ -1,5 +1,7 @@
 import { createContext, useContext, useRef } from 'react';
 import type { ReactElement, ReactNode } from 'react';
+import { createKernelStartupStore } from './startup-store';
+import type { KernelStartupStore } from './startup-store';
 import { KernelError } from '../errors';
 import type { Kernel } from '../kernel/kernel';
 import type { ModuleRef } from '../module-ref';
@@ -19,6 +21,11 @@ interface KernelContextValue {
   readonly kernel: Kernel;
   /** Tokens already warned about under this `<AppKernel>`. Dev only. */
   readonly warnedTransientTokens: Set<AnyToken>;
+  /**
+   * The startup store `useKernelStartup` subscribes to. One per
+   * `<AppKernel>`, and inert until something subscribes to it.
+   */
+  readonly startup: KernelStartupStore;
 }
 
 const KernelContext = createContext<KernelContextValue | undefined>(undefined);
@@ -76,7 +83,11 @@ export function AppKernel(props: { kernel: Kernel; children: ReactNode }): React
   // idempotent, so StrictMode's double-invoked render keeps one value.
   const valueRef = useRef<KernelContextValue | undefined>(undefined);
   if (valueRef.current === undefined || valueRef.current.kernel !== props.kernel) {
-    valueRef.current = { kernel: props.kernel, warnedTransientTokens: new Set<AnyToken>() };
+    valueRef.current = {
+      kernel: props.kernel,
+      warnedTransientTokens: new Set<AnyToken>(),
+      startup: createKernelStartupStore(props.kernel),
+    };
   }
 
   return <KernelContext value={valueRef.current}>{props.children}</KernelContext>;

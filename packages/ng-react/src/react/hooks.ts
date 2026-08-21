@@ -5,20 +5,12 @@
 
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { useKernelContext, useModuleScope } from './context';
+import { IS_DEV } from './dev';
 import type { Kernel } from '../kernel/kernel';
 import type { ModuleRef } from '../module-ref';
 import { MODULE_ID } from '../token';
 import type { AnyToken, Token } from '../token';
 import type { ModuleStatus, Unsubscribe } from '../types';
-
-/**
- * Dev-only gate for the transient warning. Read through `globalThis`
- * because `process` may not exist in a browser or under React Native.
- */
-const IS_DEV: boolean =
-  (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[
-    'NODE_ENV'
-  ] !== 'production';
 
 /**
  * Subscribes to the resolution epoch of `moduleId` and returns its current
