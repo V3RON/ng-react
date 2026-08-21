@@ -1,11 +1,3 @@
-// Module descriptor declaration API (§5.2): `defineModule`.
-//
-// Declaration only. Evaluating a descriptor must never evaluate any
-// implementation file (D1): `providers`, `init`, and `dispose` are stored as
-// thunks here and are never invoked. Registration-time concerns — cycle
-// detection (G1), missing-dependency detection (G2), duplicate ids (M3),
-// conflicting providers (C6) — belong to the kernel (stage 2+), not here.
-
 import { InvalidDescriptorError } from './errors';
 import { isModuleRef } from './module-ref';
 import type { ModuleRef } from './module-ref';
@@ -17,39 +9,63 @@ const DEFAULT_CRITICAL = false;
 const VALID_LOAD_STRATEGIES: readonly LoadStrategy[] = ['eager', 'lazy'];
 
 /**
- * The complete kernel-facing surface of a module (§5.2), returned by
- * `defineModule`.
- *
- * A note on field count: §5.2's prose states the descriptor "has exactly six
- * fields", and this task's issue repeats that count — but both the spec's
- * own §5.2 worked example and the issue's own sketch of this interface list
- * **seven** distinct keys (`id`, `dependsOn`, `load`, `critical`,
- * `providers`, `init`, `dispose`). This implementation treats the concrete,
- * twice-repeated field list as the executable contract and the "six" in the
- * prose as a stale editorial artifact — plausibly left over from the
- * Revision 2 changelog, which records `capabilities` and `contributions`
- * being removed from an earlier draft of this same field list. Unknown-field
- * rejection below validates and names exactly these seven; adding an eighth
- * remains the rejected case AGENTS.md §9 describes.
+ * Everything the kernel knows about a module: what it is called, what it
+ * depends on, when it activates, and the three thunks that make up its
+ * lifecycle. Frozen, and produced only by `defineModule`.
  */
 export interface ModuleDescriptor<Id extends string = string> {
+  /** The module's own ref. */
   readonly id: ModuleRef<Id>;
+  /** The modules that must be active before this one activates. */
   readonly dependsOn: readonly ModuleRef[];
+  /** Whether the module activates at startup or on first use. */
   readonly load: LoadStrategy;
+  /** Whether this module failing to activate at startup fails startup as a whole. */
   readonly critical: boolean;
+  /** Returns the module's providers. Called once, at activation. */
   readonly providers?: () => AnyProviderRecord[] | Promise<AnyProviderRecord[]>;
+  /** Runs after the module's providers are registered. */
   readonly init?: (ctx: ModuleContext) => void | Promise<void>;
+  /** Runs when the module is torn down, before its context goes dead. */
   readonly dispose?: (ctx: ModuleContext) => void | Promise<void>;
 }
 
-/** Input accepted by `defineModule`. Every field but `id` has a spec-given default. */
+/**
+ * The input `defineModule` accepts. Only `id` is required; an unrecognised
+ * field is an error rather than being ignored.
+ */
 export interface DefineModuleInput<Id extends string = string> {
+  /** The module's own ref, from `moduleRef()`. */
   readonly id: ModuleRef<Id>;
+  /**
+   * The modules that must be active before this one activates. Activating
+   * this module activates them first, in dependency order.
+   *
+   * @default []
+   */
   readonly dependsOn?: readonly ModuleRef[];
+  /**
+   * Whether the module activates at startup or on first use.
+   *
+   * @default 'lazy'
+   */
   readonly load?: LoadStrategy;
+  /**
+   * Whether this module failing to activate at startup fails startup as a
+   * whole. A non-critical module is quarantined instead and the rest of the
+   * application comes up without it.
+   *
+   * @default false
+   */
   readonly critical?: boolean;
+  /**
+   * Returns the module's providers. Called once, at activation, so a dynamic
+   * `import()` here keeps the implementation out of the startup bundle.
+   */
   readonly providers?: () => AnyProviderRecord[] | Promise<AnyProviderRecord[]>;
+  /** Runs after the module's providers are registered. */
   readonly init?: (ctx: ModuleContext) => void | Promise<void>;
+  /** Runs when the module is torn down, before its context goes dead. */
   readonly dispose?: (ctx: ModuleContext) => void | Promise<void>;
 }
 
@@ -76,9 +92,8 @@ function describeValue(value: unknown): string {
 }
 
 /**
- * D3: validates every element is a `ModuleRef`, rejects self-dependency
- * (identity, matching M1 — refs are compared by reference, never by id
- * string) and rejects duplicate refs.
+ * Checks every element is a `ModuleRef` and rejects self-dependency and
+ * duplicates. Refs are compared by reference, never by id string.
  */
 function validateDependsOn(
   moduleId: string,
@@ -113,15 +128,19 @@ function validateDependsOn(
 }
 
 /**
- * Creates a frozen `ModuleDescriptor` (§5.2). Validates every field
- * synchronously and throws `InvalidDescriptorError` on the first problem
- * found; never calls `providers`, `init`, or `dispose` (D1) — they are
- * stored as-is and evaluated only by the kernel, at activation.
+ * Creates a frozen module descriptor, validating every field synchronously
+ * and throwing on the first problem found.
+ *
+ * `providers`, `init` and `dispose` are stored as given and never called
+ * here, so evaluating a descriptor never reaches the module's implementation
+ * code. Nothing about the graph is checked at this point — cycles, unknown
+ * dependencies and duplicate module ids are the kernel's business, at
+ * registration.
  *
  * @throws {InvalidDescriptorError} for an unknown field, a non-ref `id`, an
  *   invalid `dependsOn` entry (non-ref, self-dependency, duplicate), an
- *   invalid `load`/`critical` value, or a non-function `providers`/`init`/
- *   `dispose`.
+ *   invalid `load` or `critical` value, or a non-function `providers`,
+ *   `init` or `dispose`.
  */
 export function defineModule<const Id extends string>(input: DefineModuleInput<Id>): ModuleDescriptor<Id> {
   if (typeof input !== 'object' || input === null) {
@@ -138,7 +157,6 @@ export function defineModule<const Id extends string>(input: DefineModuleInput<I
     );
   }
 
-  // D2: id is the module's own ref — never a string, never re-stated.
   if (!isModuleRef(input.id)) {
     throw new InvalidDescriptorError(
       `defineModule(): id must be a ModuleRef created via moduleRef(), got ${describeValue(input.id)}.`,
@@ -172,7 +190,6 @@ export function defineModule<const Id extends string>(input: DefineModuleInput<I
     );
   }
 
-  // D1: providers/init/dispose are thunks — validated as callable, never called.
   if (input.providers !== undefined && typeof input.providers !== 'function') {
     throw new InvalidDescriptorError(
       `defineModule(${moduleId}): providers must be a thunk function, got ${describeValue(input.providers)}.`,
