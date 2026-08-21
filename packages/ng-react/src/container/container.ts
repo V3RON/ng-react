@@ -160,9 +160,18 @@ export class Container {
    * Delegates to `Resolver.disposeModuleInstances` (C7, **H4**) — every
    * instance owned by `moduleId`, `module`-scoped and `singleton` alike.
    * See that method for the lifetime rule this pins down (#34).
+   *
+   * **H3/ADR-3**: `{ preservePersistent: true }` is H4's sole exception and
+   * is passed by `kernel.hotReplace` only. `kernel.deactivate` omits it, so
+   * persistent state is discarded by a real deactivation and carried by an
+   * HMR re-activation — the two paths share this code and can be told apart
+   * by nothing else.
    */
-  disposeModuleInstances(moduleId: string): Promise<void> {
-    return this.resolver.disposeModuleInstances(moduleId);
+  disposeModuleInstances(
+    moduleId: string,
+    options: { readonly preservePersistent?: boolean } = {},
+  ): Promise<void> {
+    return this.resolver.disposeModuleInstances(moduleId, options);
   }
 
   /**

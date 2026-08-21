@@ -16,6 +16,7 @@ import {
   ProviderFactoryError,
   ResolutionError,
 } from '../errors';
+import { transferPersistentState } from '../hmr/persistent';
 import { isAllOfDep, isOptionalDep, isToken, MODULE_ID } from '../token';
 import type { AnyToken, Dep, Token } from '../token';
 import type { AnyProviderRecord } from '../provider';
@@ -133,6 +134,33 @@ export class Resolver {
   private readonly moduleScopedCache = new Map<string, Map<AnyProviderRecord, CachedInstance>>();
   private readonly moduleScopedOrder = new Map<string, AnyProviderRecord[]>();
 
+  /**
+   * **H3/H4/ADR-3**: instances held back from the previous activation of a
+   * module, waiting for their replacement to be constructed.
+   *
+   * `Map<owning module id, Map<token label, old instance>>`. Populated only
+   * by `disposeModuleInstances(id, { preservePersistent: true })` — i.e.
+   * only by an HMR re-activation — and drained by `construct` the moment
+   * the matching fresh instance exists.
+   *
+   * **Keyed by token *label*, not by token identity, and that is a
+   * deliberate weakening.** A re-evaluated module file yields fresh
+   * `ProviderRecord` objects (that is what makes H4's disposal necessary at
+   * all), and under a real bundler it may yield fresh `Token` objects too if
+   * the contract chunk was re-evaluated alongside. The label is the one
+   * identity that survives, it is `moduleId/Name` by C1's convention, and
+   * the map is already scoped to a single owning module — so two colliding
+   * labels would have to be two same-named tokens provided by one module,
+   * which is an authoring bug the C1 convention exists to prevent.
+   *
+   * **Bounded to one generation.** Every `disposeModuleInstances` call
+   * clears the module's entry first and only a preserving call refills it,
+   * so a store whose provider was deleted in the edit is dropped on the next
+   * cycle rather than retained forever, and an ordinary `deactivate`
+   * (H3: "not across a real deactivation") empties it outright.
+   */
+  private readonly pendingPersistent = new Map<string, Map<string, unknown>>();
+
   // Cycle detection (§7.3): `constructing` is the set of provider records
   // currently mid-construction; `stack` is the same information ordered,
   // for building the token-path in both the C8 and circular-dependency
@@ -234,9 +262,43 @@ export class Resolver {
    * lifetime" was already not what the old code delivered.
    *
    * `transient` is untouched, per C7: the container never owned those.
+   *
+   * ### `preservePersistent` — H4's sole exception (H3, ADR-3)
+   *
+   * `{ preservePersistent: true }` is what an **HMR re-activation** passes
+   * and what an ordinary `deactivate` must not. For a record with
+   * `persistent: true` it holds the instance back instead of disposing it,
+   * parking it in `pendingPersistent` so that the replacement instance —
+   * constructed later, lazily, from the *new* factory — can adopt its state
+   * (`construct` below). Everything else is disposed exactly as before, so
+   * H4's "regardless of scope" is untouched.
+   *
+   * **A preserved instance is not disposed at all**, and that is the point
+   * rather than an oversight: `dispose()` on a store is how a store throws
+   * its state away, and running it would destroy precisely what H3 exists to
+   * carry over. The cost is that a persistent instance's own listeners
+   * outlive one HMR generation; the H7 leak invariant (task 6.2) has to know
+   * that, which is why the exception is one flag in one place rather than a
+   * property inferred from the call site.
+   *
+   * Without the flag — `kernel.deactivate`, F3 quarantine, kernel teardown —
+   * a persistent instance is disposed and discarded like any other, and the
+   * parked entry from any earlier HMR cycle is dropped. That is H3's "but
+   * not across a real deactivation", and it is why the two paths cannot be
+   * told apart by anything other than an explicit argument: since #34 they
+   * are the same code.
    */
-  async disposeModuleInstances(moduleId: string): Promise<void> {
+  async disposeModuleInstances(
+    moduleId: string,
+    options: { readonly preservePersistent?: boolean } = {},
+  ): Promise<void> {
+    const preservePersistent = options.preservePersistent ?? false;
     const owned: CachedInstance[] = [];
+    // Cleared unconditionally: see `pendingPersistent`'s "bounded to one
+    // generation" note. A non-preserving disposal leaves it empty, which is
+    // H3's discard-on-deactivate.
+    this.pendingPersistent.delete(moduleId);
+    const preserved = new Map<string, unknown>();
 
     const order = this.moduleScopedOrder.get(moduleId);
     const cache = this.moduleScopedCache.get(moduleId);
@@ -245,9 +307,14 @@ export class Resolver {
     if (order !== undefined && cache !== undefined) {
       for (const record of order) {
         const cached = cache.get(record);
-        if (cached !== undefined) {
-          owned.push(cached);
+        if (cached === undefined) {
+          continue;
         }
+        if (preservePersistent && cached.record.persistent) {
+          preserved.set(cached.record.token.label, cached.value);
+          continue;
+        }
+        owned.push(cached);
       }
     }
 
@@ -263,12 +330,23 @@ export class Resolver {
         const cached = this.singletonCache.get(record);
         if (cached !== undefined && cached.ownerId === moduleId) {
           this.singletonCache.delete(record);
-          owned.push(cached);
+          if (preservePersistent && cached.record.persistent) {
+            preserved.set(cached.record.token.label, cached.value);
+          } else {
+            owned.push(cached);
+          }
         } else {
           survivors.push(record);
         }
       }
       this.singletonOrder = survivors;
+    }
+
+    // H3/ADR-3: parked *before* any disposal runs, so a `dispose()` on some
+    // other instance of this module that reaches for the store still finds
+    // the same object the replacement will inherit from.
+    if (preserved.size > 0) {
+      this.pendingPersistent.set(moduleId, preserved);
     }
 
     if (owned.length === 0) {
@@ -416,11 +494,50 @@ export class Resolver {
       }
       // 'transient': never cached, never tracked for disposal (C7).
 
+      // **H3/H4/ADR-3**: adopt the state of the instance the previous
+      // activation held back, if there is one. After the cache write, so a
+      // `transfer` hook that resolves something which resolves back to this
+      // token sees the finished instance rather than re-entering
+      // construction — and unconditionally `delete`d, so exactly one
+      // generation of instance can ever inherit one parked predecessor.
+      if (record.persistent) {
+        this.adoptPersistentState(record, entry.owner, value);
+      }
+
       return value as T;
     } finally {
       this.constructing.delete(record);
       this.stack.pop();
     }
+  }
+
+  /**
+   * **ADR-3**: hands a freshly constructed `persistent` instance the state
+   * of its parked predecessor, if the owning module went through an HMR
+   * re-activation and had one.
+   *
+   * `transferPersistentState` never throws (that is ADR-3 branch 4's whole
+   * contract), so there is no `try` here — one would only hide a bug in the
+   * transfer function itself.
+   */
+  private adoptPersistentState(record: AnyProviderRecord, ownerId: string, newInstance: unknown): void {
+    const parked = this.pendingPersistent.get(ownerId);
+    const label = record.token.label;
+    if (parked === undefined || !parked.has(label)) {
+      return;
+    }
+    const oldInstance = parked.get(label);
+    parked.delete(label);
+    if (parked.size === 0) {
+      this.pendingPersistent.delete(ownerId);
+    }
+    transferPersistentState({
+      record,
+      oldInstance,
+      newInstance,
+      moduleId: ownerId,
+      report: this.onError,
+    });
   }
 
   /** Builds the C8 message: full path plus the dependsOn suggestion, when it applies. */
