@@ -1,10 +1,6 @@
-// Public API surface of the ng-react kernel.
-// Populated stage by stage; see AGENTS.md for the staged plan.
-//
-// Every export here is explicit and named — no `export *` — so this file
-// stays the single, auditable source of truth for what a consumer may use.
+// Public API surface. Every export is explicit and named — no `export *` —
+// so this file is the complete list of what a consumer may use.
 
-// types.ts — shared public vocabulary.
 export type {
   ModuleStatus,
   LoadStrategy,
@@ -18,7 +14,6 @@ export type {
   ErrorSink,
 } from './types';
 
-// errors.ts — the KernelError hierarchy.
 export type { KernelErrorOptions } from './errors';
 export {
   KernelError,
@@ -42,57 +37,40 @@ export {
   UnsupportedEmitterError,
 } from './errors';
 
-// module-ref.ts — module value identities (M1-M3).
 export type { ModuleRef } from './module-ref';
 export { moduleRef, isModuleRef } from './module-ref';
 
-// token.ts — injection tokens and dependency-declaration wrappers (C1, C4).
 export type { Token, AnyToken, OptionalDep, AllOfDep, Dep, Resolved, ResolvedDeps } from './token';
 export { createToken, isToken, optional, allOf, MODULE_ID } from './token';
 
-// provider.ts — provider declaration API (C2, C3, C5, C6, C7, ADR-3).
 export type { ProviderOptions, ProviderRecord, AnyProviderRecord } from './provider';
 export { provide, contribute } from './provider';
 
-// define-module.ts — module descriptor declaration API (D1-D4).
 export type { ModuleDescriptor, DefineModuleInput } from './define-module';
 export { defineModule } from './define-module';
 
-// kernel/kernel.ts — the kernel: registration, the dependency graph and
-// inspect() (M3, G1-G3, A2). Exactly the three names task 3.1 asks for; the
-// `inspect()` result types stay internal for now and are reachable as
+// The `inspect()` result types are not exported by name; reach them as
 // `ReturnType<Kernel['inspect']>`.
 export type { Kernel, KernelOptions } from './kernel/kernel';
 export { createKernel } from './kernel/kernel';
 
-// hmr/ — the HMR seam (H2, H3, ADR-3, ADR-5). `createViteHmrAdapter` takes
-// the host's hot context; no file in this package reads one (ADR-5). Since
-// #42 the seam is `invalidate` only: the `accept` half of HMR belongs to the
+// The HMR seam is `invalidate` only. The `accept` half belongs to the
 // module's own file, which must name `import.meta.hot.accept` literally for
-// Vite to see it (#46).
-// `EpochStore` and `transferPersistentState` stay internal — the kernel
-// re-exposes the former as `epochOf`/`bumpEpoch`/`subscribeEpoch` and drives
-// the latter from the container.
+// Vite's static analysis to find it.
 export type { HmrAdapter, ViteHotContext } from './hmr/adapter';
 export { createViteHmrAdapter, createNoopHmrAdapter } from './hmr/adapter';
 export type { Store } from './hmr/persistent';
 export { defineStore } from './hmr/persistent';
 
-// kernel/failure.ts — the failure policy (F1-F4). Only the token is public:
-// `ErrorSink`/`ErrorInfo` are types above, and the router that delivers to
-// the sinks is the kernel's business, not a consumer's.
 export { ErrorSinkToken } from './kernel/failure';
 
-// react/ — the React bindings (R1, R2, R3, H6, ADR-2). ADR-6: these are the
-// only exports whose implementation imports `react`; importing this barrel
-// does not pull React in unless one of them is used (`sideEffects: false`).
+// The React bindings are the only exports whose implementation imports
+// `react`; importing this barrel does not pull React in unless one of them
+// is used (`sideEffects: false`).
 export type { ModuleState } from './react/hooks';
 export { AppKernel, ModuleScope, useKernel, useModuleScope } from './react/context';
 export { useModule, useService, useServiceAll, useServiceOptional } from './react/hooks';
 
-// testing/ — the test harness (R4, H7, acceptance criteria 7 and 9). Part of
-// the kernel package, not an afterthought: stage 7's generator emits tests
-// that use it and stage 8's acceptance suite is written against it.
 export type { TestKernel, TestKernelOptions, CollectedError } from './testing/test-kernel';
 export { createTestKernel } from './testing/test-kernel';
 export type { LeakReport } from './testing/leak-counters';

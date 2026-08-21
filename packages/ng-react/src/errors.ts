@@ -1,8 +1,5 @@
-// KernelError hierarchy + message builders.
-//
-// Errors are a feature (design principle 6): every subclass here produces a
-// message with enough context to act on without opening the kernel source.
-// Where the spec quotes a message verbatim (G1), it is reproduced exactly.
+// Every error the kernel raises. Messages are part of the contract: each one
+// carries enough context to act on without reading the kernel source.
 
 /** Options accepted by every `KernelError` subclass constructor. */
 export interface KernelErrorOptions {
@@ -11,8 +8,9 @@ export interface KernelErrorOptions {
 }
 
 /**
- * Base class for every error the kernel throws. Never thrown directly —
- * always via a named subclass so callers can `instanceof`-narrow.
+ * Base class for every error the kernel raises. Always thrown as one of the
+ * named subclasses, so callers can narrow with `instanceof`, or branch on the
+ * stable `code` string without importing the subclass.
  */
 export class KernelError extends Error {
   readonly code: string;
@@ -23,10 +21,7 @@ export class KernelError extends Error {
     this.name = 'KernelError';
     this.code = code;
     this.moduleId = options?.moduleId;
-    // Node/V8 only; guarded so this class stays usable in other engines
-    // (JSC/Hermes on React Native, which do not implement it). `ES2022`
-    // + `DOM` lib types have no declaration for it, so narrow through
-    // `unknown` rather than reaching for `any`.
+    // Absent on JSC and Hermes, so the call is guarded rather than assumed.
     const errorConstructor = Error as unknown as {
       captureStackTrace?: (targetObject: object, constructorOpt?: unknown) => void;
     };
@@ -36,10 +31,7 @@ export class KernelError extends Error {
   }
 }
 
-/**
- * ADR-2: `'app'` is a reserved module id — `moduleRef('app')` throws this
- * immediately rather than returning a ref.
- */
+/** Thrown by `moduleRef()` for the reserved module id `'app'`. */
 export class ReservedModuleIdError extends KernelError {
   constructor(id: string) {
     super(
@@ -53,9 +45,8 @@ export class ReservedModuleIdError extends KernelError {
 }
 
 /**
- * M3: registering two descriptors whose refs carry the same id string is a
- * fatal startup error naming both sources (guards against copy-paste of
- * `moduleRef('x')` across contracts).
+ * Thrown at registration when two registered descriptors carry the same
+ * module id string. The message names both sources.
  */
 export class DuplicateModuleIdError extends KernelError {
   constructor(id: string, sourceA: string, sourceB: string) {
@@ -70,14 +61,10 @@ export class DuplicateModuleIdError extends KernelError {
 }
 
 /**
- * G1: cycles in `dependsOn` are fatal at registration. `cycle` is the
- * distinct modules in the cycle, in order; the message repeats the first
- * module at the end to show closure of the loop.
+ * Thrown at registration when `dependsOn` forms a cycle.
  *
- * Message is spec-mandated verbatim (§9, G1), e.g. for
- * `['orders', 'payments', 'risk']`:
- *
- *   Module dependency cycle: orders → payments → risk → orders. Break it by moving the shared surface into a contract.
+ * `cycle` holds the distinct modules in the cycle, in order; the message
+ * repeats the first at the end to show the loop closing.
  */
 export class DependencyCycleError extends KernelError {
   readonly cycle: readonly string[];
@@ -98,8 +85,8 @@ export class DependencyCycleError extends KernelError {
 }
 
 /**
- * G2: a `dependsOn` ref whose descriptor was not registered with the kernel
- * is fatal at registration, naming the missing module id and the dependent.
+ * Thrown at registration when a `dependsOn` ref names a module whose
+ * descriptor was never registered with the kernel.
  */
 export class UnknownModuleError extends KernelError {
   constructor(missingId: string, dependentId: string) {
@@ -114,10 +101,10 @@ export class UnknownModuleError extends KernelError {
 }
 
 /**
- * D1-D4: the module descriptor is malformed — e.g. a static field could not
- * be evaluated without touching implementation code, or a required field is
- * missing or the wrong shape. `reason` should be a complete, actionable
- * sentence; `moduleId` is included when the offending module is known.
+ * Thrown when a declaration is malformed: a bad module descriptor, provider
+ * options, token label, or module ref.
+ *
+ * @param reason A complete, actionable sentence used as the message verbatim.
  */
 export class InvalidDescriptorError extends KernelError {
   constructor(reason: string, moduleId?: string) {
@@ -127,8 +114,8 @@ export class InvalidDescriptorError extends KernelError {
 }
 
 /**
- * L4: after dispose, the `ModuleContext` is dead — any use throws, naming
- * the module and noting the likely cause (a stale closure surviving HMR).
+ * Thrown by any member of a `ModuleContext` used after its module was
+ * disposed. Usually means code is holding a stale closure across HMR.
  */
 export class DeadContextError extends KernelError {
   constructor(moduleId: string) {
@@ -143,14 +130,8 @@ export class DeadContextError extends KernelError {
 }
 
 /**
- * C6: two `provide()` calls for one token are a registration-time fatal
- * error naming both providing modules (via provenance, C9 — provenance is
- * never self-reported). `existingOwner` is the module that already holds the
- * token; `newOwner` is the module whose registration was rejected.
- *
- * Message is spec-mandated verbatim (issue #11, task 2.1):
- *
- *   Token 'orders/OrderService' is already provided by 'orders'; 'billing' cannot provide it again. Use provide(token, { override: true, ... }) in the composition root or a test if this is intentional.
+ * Thrown at registration when two modules `provide()` the same token.
+ * `provide(token, { override: true })` is the explicit way to replace one.
  */
 export class DuplicateProviderError extends KernelError {
   constructor(tokenLabel: string, existingOwner: string, newOwner: string) {
@@ -165,10 +146,9 @@ export class DuplicateProviderError extends KernelError {
 }
 
 /**
- * C5: `provide` on a token that already has contributions, or `contribute`
- * on a token that was `provide`d, is a registration-time error. Names the
- * token, every module already registered against it together with the kind
- * it used, and the module + kind of the new, conflicting registration.
+ * Thrown at registration when `provide()` and `contribute()` are mixed for
+ * one token. The message names every module already registered against the
+ * token and the kind each used.
  */
 export class ProviderKindConflictError extends KernelError {
   constructor(
@@ -190,11 +170,9 @@ export class ProviderKindConflictError extends KernelError {
 }
 
 /**
- * Registering the same module id twice without an intervening
- * `ProviderRegistry.withdraw()` is an error: the kernel guarantees
- * single-flight activation (A2), so a second registration for a module id
- * that is still registered indicates a bug, not a legitimate re-activation.
- * HMR re-activation (H2) withdraws before it re-registers.
+ * Thrown when a module id is registered with the container while a previous
+ * registration for it is still live. Withdraw first — an HMR re-activation
+ * does exactly that.
  */
 export class DuplicateRegistrationError extends KernelError {
   constructor(moduleId: string) {
@@ -209,21 +187,14 @@ export class DuplicateRegistrationError extends KernelError {
 }
 
 /**
- * C8: a resolution failed because no provider is registered for a token
- * somewhere along the chain. `path` is every token label from the one the
- * requester originally asked for down to the one that failed, in order (a
- * single-element path means the top-level token itself had no provider).
+ * Thrown when no provider is registered for a token somewhere along a
+ * resolution chain.
  *
- * When the failing token's label prefix (before the first `/`) names a
- * module the registry knows about but that is missing from the requester's
- * `dependsOn`, `suggestion` carries that fact and is appended to the
- * message verbatim.
- *
- * Message is spec-mandated verbatim (§7.2, C8), e.g. for
- * `path = ['orders/OrderService', 'payments/PaymentGateway']` with a
- * suggestion of `{ missingModuleId: 'payments', requesterId: 'orders' }`:
- *
- *   Cannot resolve orders/OrderService → payments/PaymentGateway: no provider. 'payments' is registered but not listed in dependsOn of 'orders'.
+ * `path` runs from the token the caller asked for down to the one that
+ * failed; a single-element path means the requested token itself had no
+ * provider. `suggestion` is present when the failing token's label names a
+ * module the kernel knows about but that is missing from the requester's
+ * `dependsOn`, which is the usual cause.
  */
 export class ResolutionError extends KernelError {
   readonly path: readonly string[];
@@ -245,15 +216,11 @@ export class ResolutionError extends KernelError {
 }
 
 /**
- * §7.3: the container supports no circular resolution of any kind — no lazy
- * proxies, no forward refs. `cyclePath` is the distinct token labels
- * involved, in resolution order; the message repeats the first at the end
- * to show closure of the loop (same convention as `DependencyCycleError`,
- * G1).
+ * Thrown when resolving a token re-enters itself. There is no lazy proxy or
+ * forward-ref escape hatch; the cycle must be broken in the design.
  *
- * Message, e.g. for `cyclePath = ['orders/OrderService', 'orders/Repo']`:
- *
- *   Circular dependency while resolving orders/OrderService: orders/OrderService → orders/Repo → orders/OrderService.
+ * `cyclePath` holds the distinct token labels in resolution order; the
+ * message repeats the first at the end to show the loop closing.
  */
 export class CircularDependencyError extends KernelError {
   readonly cyclePath: readonly string[];
@@ -271,10 +238,9 @@ export class CircularDependencyError extends KernelError {
 }
 
 /**
- * A provider factory threw while being constructed. The original error is
- * preserved as `cause` — never swallowed — while the message still carries
- * the full resolution path (same join format as `ResolutionError`/C8), so
- * the chain that led to the failing factory is never lost.
+ * Thrown when a provider factory throws while constructing an instance. The
+ * factory's own error is the `cause`; `path` is the resolution chain that
+ * led to it.
  */
 export class ProviderFactoryError extends KernelError {
   readonly path: readonly string[];
@@ -287,12 +253,12 @@ export class ProviderFactoryError extends KernelError {
 }
 
 /**
- * ADR-1: async disposal (a `dispose()`/`onDispose()` that returns a
- * promise) is awaited with a timeout (default 2 s, `disposeTimeoutMs`). On
- * timeout the instance is still marked disposed and this error is handed to
- * the resolver's `onError` callback (routing to the kernel's error sinks,
- * F4, lands in stage 3) naming the owning module and the token whose
- * disposal did not complete in time.
+ * Reported when a provider instance's `dispose()` or `onDispose()` returns a
+ * promise that does not settle within `disposeTimeoutMs`.
+ *
+ * Routed to the error sinks, not thrown. The instance is marked disposed
+ * regardless and the rest of the teardown continues, so the underlying call
+ * may still be running afterwards.
  */
 export class DisposeTimeoutError extends KernelError {
   constructor(moduleId: string, tokenLabel: string, timeoutMs: number) {
@@ -307,20 +273,15 @@ export class DisposeTimeoutError extends KernelError {
 }
 
 /**
- * A3: a module's activation did not complete within `initTimeoutMs`
- * (default 10 s, configurable per kernel).
+ * Raised when a module's activation does not complete within
+ * `initTimeoutMs`.
  *
- * The timeout covers **both** halves of activation's evaluation phase — the
- * `providers` thunk and `init(ctx)` — because from the outside they are one
- * indivisible "not ready yet" window, and a slow `import()` behind a
- * provider thunk hangs startup exactly as thoroughly as a slow `init`.
- * Dependency activation is *not* covered: each dependency runs under its
- * own timeout, so a chain of ten modules cannot exhaust one budget and
- * blame the last one.
+ * The budget covers the `providers` thunk and `init(ctx)` together, but not
+ * the activation of dependencies — each of those runs under its own timeout.
  *
- * The module transitions to `failed` and stays there. If the underlying
- * `init` later resolves, that result is discarded — a timed-out module is
- * never resurrected; `kernel.retry()` (F3, task 3.3) is the only way back.
+ * The module moves to `failed` and stays there. If the underlying `init`
+ * later resolves, that result is discarded; `kernel.retry()` is the only way
+ * back.
  */
 export class ActivationTimeoutError extends KernelError {
   constructor(moduleId: string, timeoutMs: number) {
@@ -336,15 +297,12 @@ export class ActivationTimeoutError extends KernelError {
 }
 
 /**
- * F1: a module's own activation code threw — either its `providers` thunk
- * or its `init(ctx)`. The original error is attached as `cause`, so the
- * chain a module author reads starts at the module id and ends at their own
- * stack frame.
+ * Raised when a module's own activation code throws — its `providers` thunk
+ * or its `init(ctx)`. The original error is the `cause`.
  *
- * Errors raised by the *container* while registering the returned records
- * (C6 duplicate provider, C5 kind conflict) are deliberately **not** wrapped
- * in this: they already name both modules and the token, and burying a
- * spec-quoted message one `cause` deeper makes it worse, not better.
+ * Registration errors the container raises for the returned records
+ * (`DuplicateProviderError`, `ProviderKindConflictError`) surface unwrapped
+ * instead: they already name both modules and the token.
  */
 export class ModuleActivationError extends KernelError {
   /** Which half of the evaluation phase threw. */
@@ -363,10 +321,9 @@ export class ModuleActivationError extends KernelError {
 }
 
 /**
- * F3: a module could not activate because one of its `dependsOn` modules
- * failed to activate. The message names the failed dependency — the module
- * that quarantine (task 3.3) will withdraw — and the dependency's own error
- * is the `cause`, so the chain reads dependent → dependency → root cause.
+ * Raised when a module cannot activate because one of its `dependsOn`
+ * modules failed to activate. The dependency's own error is the `cause`, so
+ * the chain reads dependent to dependency to root cause.
  */
 export class DependencyActivationError extends KernelError {
   /** The dependency whose activation failed. */
@@ -385,13 +342,12 @@ export class DependencyActivationError extends KernelError {
 }
 
 /**
- * ADR-1: a module's optional `dispose(ctx)` handler returned a promise that
- * did not settle within `disposeTimeoutMs` (default 2 s).
+ * Reported when a module's `dispose(ctx)` handler returns a promise that does
+ * not settle within `disposeTimeoutMs`. The per-instance equivalent is
+ * `DisposeTimeoutError`.
  *
- * The container raises `DisposeTimeoutError` for the same situation one
- * level down, per *instance*; this one is the module-level handler, which
- * has a module id but no token. Both are reported and neither aborts the
- * rest of the teardown (L3).
+ * Routed to the error sinks, not thrown, and the rest of the teardown
+ * continues.
  */
 export class ModuleDisposeTimeoutError extends KernelError {
   constructor(moduleId: string, timeoutMs: number) {
@@ -406,19 +362,15 @@ export class ModuleDisposeTimeoutError extends KernelError {
 }
 
 /**
- * **ADR-3 branch 4 / H3**: `persistent: true` state could not be carried
- * across an HMR re-activation of its owning module.
+ * Reported when `persistent: true` state could not be carried across an HMR
+ * re-activation of its owning module.
  *
- * Reported through the error sinks (F4), **never thrown**: ADR-3 is explicit
- * that "a failed transfer must not break the HMR cycle". The freshly
- * constructed instance is left exactly as its factory built it, so the app
- * keeps running with a reset store rather than a half-restored one.
+ * Routed to the error sinks, never thrown: a failed transfer must not break
+ * the HMR cycle. The new instance is left exactly as its factory built it,
+ * so the app keeps running with reset state rather than half-restored state.
  *
- * Deliberately **not** exported from `index.ts`. It is a diagnostic a sink
- * renders, not a type a consumer branches on — and the branch that would be
- * written (`instanceof`) is already available as
- * `error.code === 'HMR_PERSISTENT_TRANSFER_FAILED'` through the public
- * `KernelError` base. See the PR body.
+ * Not exported from `index.ts`; sinks that need to branch on it can match
+ * `error.code === 'HMR_PERSISTENT_TRANSFER_FAILED'`.
  */
 export class PersistentTransferError extends KernelError {
   /** The token whose persistent instance could not be transferred. */
@@ -439,15 +391,9 @@ export class PersistentTransferError extends KernelError {
 }
 
 /**
- * L2: `ctx.on(emitter, event, handler)` was handed something that is not
- * subscribe-shaped in any of the four supported ways.
- *
- * `ctx.on` duck-types deliberately: spec §8 L2 requires it to work against
- * the spec 02 event bus *without the bus being special-cased*, so there is
- * no interface to implement and no registry of blessed emitters — which
- * makes a precise error the only thing between a caller and a silently
- * missing subscription. The message therefore names what was passed *and*
- * enumerates every shape that would have worked (principle 6).
+ * Thrown by `ctx.on` when the emitter matches none of the four supported
+ * subscribe/unsubscribe shapes. The message names what was passed and lists
+ * every shape that would have worked.
  */
 export class UnsupportedEmitterError extends KernelError {
   constructor(moduleId: string, event: string, detail: string) {

@@ -303,8 +303,11 @@ app use the bare feature name (`auth`, `orders`) per spec §4. Token labels are
 - No default exports.
 - Errors: throw subclasses from `src/errors.ts`, never bare `Error`. Every error carries
   the full resolution/cycle path and, where the spec specifies one, a suggested fix.
-- Comments explain *why*, and cite the spec id (`// C4: resolution context …`) when
-  implementing a numbered requirement.
+- JSDoc on an export says what the thing is and how it behaves for a consumer, in the
+  present tense, with `@default` on every optional property that has one. Spec ids, ADR
+  numbers, PR references and design history belong in `docs/`, the spec and commit
+  messages — never in shipped source. Traceability lives in **test names**, which keep
+  their spec ids: do not strip those.
 - Keep the kernel dependency-free: **zero runtime dependencies** beyond the `react` peer.
 
 ---

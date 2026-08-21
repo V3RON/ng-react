@@ -1,62 +1,73 @@
-// Provider declaration API (§7.2): `provide()` and `contribute()`.
-//
-// Declaration only. Nothing here constructs an instance or evaluates a
-// factory — `factory` is stored verbatim and called later by the container
-// (stage 2), which is what makes providers lazy (C3). All validation in this
-// file runs once, synchronously, when `provide`/`contribute` is called.
-
 import { InvalidDescriptorError } from './errors';
 import { isAllOfDep, isOptionalDep, isToken } from './token';
 import type { Dep, ResolvedDeps, Token } from './token';
 import type { Scope } from './types';
 
 /**
- * Nominal brand key for `ProviderRecord`. Not exported, for the same reason
- * as `TOKEN_BRAND` in `token.ts`: nothing outside this module can reference
- * it, so nothing outside `provide()`/`contribute()` can fabricate a
- * `ProviderRecord` by hand.
+ * Nominal brand key. Not exported, so nothing outside
+ * `provide()`/`contribute()` can fabricate a `ProviderRecord`.
  */
 const PROVIDER_RECORD_BRAND = Symbol('ProviderRecord');
 
 const VALID_SCOPES: readonly Scope[] = ['singleton', 'module', 'transient'];
 
 /**
- * Options accepted by `provide()`/`contribute()`.
+ * Options accepted by `provide()` and `contribute()`.
  *
- * `D` is intentionally constrained by `readonly unknown[]`, not
- * `readonly Dep[]` — see the long comment on `ResolvedDeps` in `token.ts`.
- * `Token<T>`'s brand is invariant in `T`, so TypeScript's element-wise check
- * of a tuple literal against a generic `Dep<unknown>[]` constraint rejects
- * every realistic heterogeneous `deps` array (e.g.
- * `[HttpToken, StorageRootToken, MODULE_ID]`, three different `Token<T>`s) at
- * the call site — before `ResolvedDeps<D>` ever runs. Constraining by
- * `unknown` sidesteps that and defers per-element validity to
- * `ResolvedDeps<D>` at the type level and to the runtime check below (C2
- * task 1.1 handoff note): because the type system can no longer reject a
- * non-`Dep` element, `provide`/`contribute` must reject it at runtime.
+ * @example
+ * ```ts
+ * provide(OrderServiceToken, {
+ *   deps: [HttpToken, optional(CacheToken)],
+ *   factory: (http, cache) => new OrderService(http, cache),
+ * });
+ * ```
  */
 export interface ProviderOptions<T, D extends readonly unknown[] = readonly []> {
-  /** C2: one of the three flat scopes. Default `'singleton'`. */
+  /**
+   * The lifetime of the instances this provider creates.
+   *
+   * @default 'singleton'
+   */
   scope?: Scope;
-  /** The dependency tuple passed positionally to `factory`. Default `[]`. */
+  /**
+   * The dependencies passed positionally to `factory`, in this order.
+   *
+   * @default []
+   */
   deps?: D;
-  /** C3: stored, never called here. Constructs the instance on first resolution. */
+  /** Constructs the instance. Stored here and called on first resolution, never during declaration. */
   factory: (...args: ResolvedDeps<D>) => T;
-  /** C6: explicit opt-in to replace an existing provider for this token. */
+  /**
+   * Replaces an existing provider for this token instead of conflicting with
+   * it. Intended for the composition root and tests.
+   *
+   * @default false
+   */
   override?: boolean;
-  /** C7: escape hatch for instances that don't implement `dispose()`. Not valid on `'transient'`. */
+  /**
+   * Tears the instance down when its scope ends, for instances that do not
+   * implement `Disposable`. Not allowed on a `'transient'` provider.
+   */
   onDispose?: (instance: T) => void | Promise<void>;
-  /** H3/H4, ADR-3: survive HMR re-activation of the owning module by snapshot transfer. Not valid on `'transient'`. */
+  /**
+   * Carries the instance's state across an HMR re-activation of the owning
+   * module. Not allowed on a `'transient'` provider.
+   *
+   * @default false
+   */
   persistent?: boolean;
-  /** ADR-3: overrides the default snapshot transfer. Requires `persistent: true`. */
+  /**
+   * Replaces the default snapshot-based state transfer with a direct copy
+   * from the old instance to the new one. Requires `persistent: true`.
+   */
   transfer?: (oldInstance: T, newInstance: T) => void;
 }
 
 /**
- * The frozen, opaque record produced by `provide()`/`contribute()` (§7.2).
- * Deliberately carries **no** provenance/owner field: **C9** is explicit that
- * provenance (which module registered this) is kernel-assigned at
- * registration time, never passed by the module itself.
+ * The frozen, opaque record produced by `provide()` and `contribute()`.
+ *
+ * It carries no owner field: which module a provider belongs to is assigned
+ * by the kernel at registration, never declared by the module itself.
  */
 export interface ProviderRecord<T = unknown> {
   readonly token: Token<T>;
@@ -73,22 +84,11 @@ export interface ProviderRecord<T = unknown> {
 
 /**
  * A `ProviderRecord` with its value type erased — the element type of a
- * module's `providers` array and of every collection the container holds.
+ * module's `providers` array.
  *
- * ADR-10. `ProviderRecord<T>` is invariant in `T` twice over: `Token<T>`'s
- * brand is invariant, and `onDispose(instance: T)` / `transfer(old: T, new: T)`
- * put `T` in contravariant position. So the spec's own §7.2 worked example —
- * `[provide(OrderServiceToken, ...), contribute(AnalyticsSinkToken, ...)]` —
- * has type `(ProviderRecord<OrderService> | ProviderRecord<AnalyticsSink>)[]`
- * and is assignable to no `ProviderRecord<unknown>[]`. Erasing with `any` is
- * the containment: it is confined to this alias and `AnyToken`, and every
- * public API that consumes a record is generic in `T`, recovering the precise
- * type from the token it is handed.
- *
- * The known cost: an `AnyProviderRecord` can be re-narrowed to a concrete
- * `ProviderRecord<X>` without complaint. Acceptable, because records are
- * opaque values — nothing reads `T` off a record; the container always
- * re-derives it from the token passed to `resolve`.
+ * `ProviderRecord<T>` is invariant in `T`, so a mixed array of records has no
+ * common supertype expressible with `unknown`. Nothing reads `T` back off a
+ * record; the container re-derives it from the token passed to `resolve`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyProviderRecord = ProviderRecord<any>;
@@ -114,14 +114,11 @@ function describeValue(value: unknown): string {
 }
 
 /**
- * Validates `deps` and returns it typed as `readonly Dep[]` for storage on
- * the `ProviderRecord`.
+ * Validates `deps` and returns it typed as `readonly Dep[]`.
  *
- * C2 task-1.1 handoff note: because `ResolvedDeps`'s constraint is
- * `readonly unknown[]`, a typo like `deps: [HttpToken, 'storage']` infers the
- * corresponding `factory` parameter as `never` instead of failing to
- * compile — a confusing error, not an actionable one. This runtime check is
- * therefore the only thing standing between the author and that `never`.
+ * The type system cannot catch a non-`Dep` element — `deps: [HttpToken,
+ * 'storage']` compiles and infers the corresponding `factory` parameter as
+ * `never` — so this check is what turns that into an actionable error.
  */
 function validateDeps(kind: 'provide' | 'contribute', label: string, deps: readonly unknown[]): readonly Dep[] {
   deps.forEach((dep, index) => {
@@ -156,7 +153,6 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
     );
   }
 
-  // C2: exactly three flat scopes, default 'singleton'.
   const scope: Scope = options.scope ?? 'singleton';
   if (!VALID_SCOPES.includes(scope)) {
     throw new InvalidDescriptorError(
@@ -171,18 +167,11 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
   }
   const deps = validateDeps(kind, label, rawDeps);
 
-  // C3 / principle 6: catch the case ResolvedDeps' `unknown[]` constraint cannot — a
-  // `deps` array shorter than what `factory` actually requires. Explicit non-empty `deps`
-  // already gets this from the type checker (ResolvedDeps<D> fixes factory's parameter
-  // list), but `deps` omitted or `deps: []` type-checks against a niladic factory type
-  // that TypeScript does not enforce strictly enough to reject extra required parameters
-  // (see the PR discussion on task 1.2). `Function.prototype.length` counts exactly the
-  // leading required positional parameters — defaults, rest, and destructuring all either
-  // reduce or don't inflate it — so this check is one-sided: it can only false-negative
-  // (miss a real mismatch hidden behind a default/rest/destructured parameter), never
-  // false-positive. A factory whose required arity exceeds deps.length is unconditionally
-  // a bug: the container calls factory with exactly one argument per dep, so the extra
-  // parameters silently receive `undefined`.
+  // Catches a factory that requires more arguments than `deps` supplies, which
+  // the type checker misses when `deps` is omitted or empty. The check is
+  // one-sided: `Function.prototype.length` ignores parameters with defaults,
+  // rest and destructured ones, so it can miss a real mismatch but never
+  // reports a false one.
   const arity = options.factory.length;
   if (arity > deps.length) {
     const first = deps.length + 1;
@@ -208,8 +197,8 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
         `${kind}(${label}): onDispose must be a function, got ${describeValue(options.onDispose)}.`,
       );
     }
-    // C7: transient lifetime is the consumer's responsibility; the
-    // container never calls onDispose for a transient instance.
+    // The container never disposes transient instances, so onDispose would
+    // never run.
     if (scope === 'transient') {
       throw new InvalidDescriptorError(
         `${kind}(${label}): onDispose is not allowed on a 'transient' provider — transient instances are ` +
@@ -225,8 +214,6 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
       `${kind}(${label}): persistent must be a boolean, got ${describeValue(options.persistent)}.`,
     );
   }
-  // ADR-3: persistent transfer only makes sense for state that survives its
-  // own module's HMR re-activation; transient instances never do.
   if (persistent && scope === 'transient') {
     throw new InvalidDescriptorError(
       `${kind}(${label}): persistent is not allowed on a 'transient' provider (ADR-3) — there is no instance ` +
@@ -240,8 +227,6 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
         `${kind}(${label}): transfer must be a function, got ${describeValue(options.transfer)}.`,
       );
     }
-    // ADR-3: transfer only makes sense as a customization of persistent
-    // snapshot transfer.
     if (!persistent) {
       throw new InvalidDescriptorError(
         `${kind}(${label}): transfer requires persistent: true (ADR-3) — without persistent, there is no ` +
@@ -255,9 +240,6 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
     kind,
     scope,
     deps: Object.freeze(deps.slice()),
-    // Erasing `D` here is safe: the container only ever invokes `factory`
-    // with arguments it resolved from this same `deps` array, matching the
-    // arity and types `ResolvedDeps<D>` gave the caller at declaration time.
     factory: options.factory as (...args: readonly unknown[]) => T,
     override,
     onDispose: options.onDispose,
@@ -269,16 +251,16 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
 }
 
 /**
- * Declares a single-value provider for `token` (§7.2). Nothing is
- * constructed here — `factory` is stored and called by the container on
- * first resolution (C3).
+ * Declares the single provider for `token`.
  *
- * `provide` on a token that already has `contribute`d entries is a
- * registration-time error (C5) — out of scope for this module; that check
- * happens when the kernel registers providers (stage 2).
+ * Nothing is constructed here: `factory` runs on first resolution. Only one
+ * module may `provide()` a given token, and a token that already has
+ * `contribute()`d entries cannot be `provide()`d — both are reported by the
+ * kernel at registration, not here.
  *
- * @throws {InvalidDescriptorError} for an invalid token, scope, deps
- *   element, or an ADR-3/C7 combination that can never take effect.
+ * @throws {InvalidDescriptorError} for an invalid token, scope or `deps`
+ *   element, a factory needing more arguments than `deps` supplies, or an
+ *   option combination that could never take effect.
  */
 export function provide<T, const D extends readonly unknown[] = readonly []>(
   token: Token<T>,
@@ -288,11 +270,11 @@ export function provide<T, const D extends readonly unknown[] = readonly []>(
 }
 
 /**
- * Declares a multi-provider (contribution) for `token` (C5). Identical
- * validation to `provide`; the only difference is the `kind` recorded on the
- * resulting `ProviderRecord`, which the container (stage 2) uses to route
- * registration into the reactive contribution collection instead of the
- * single-provider slot.
+ * Declares one entry in the contribution collection for `token`. Any number
+ * of modules may contribute to the same token; consumers read the collection
+ * with `allOf(token)` or `ctx.getAll(token)`.
+ *
+ * Validation is identical to `provide`.
  *
  * @throws {InvalidDescriptorError} — see `provide`.
  */
