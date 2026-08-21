@@ -357,16 +357,20 @@ activates (HANDOFF §6, #35). `App.tsx` closes the gap by pairing it with `useMo
 re-render on status change; the pairing is commented at both use sites. Not a criterion, but it
 is the kind of thing a reader of this table will hit next.
 
-### A defect found while writing this suite, and deliberately not fixed here
+### A defect found while writing this suite — **fixed in #49**
 
-`createTestKernel(...).get(token, requester)` **silently ignores `requester`**:
-`packages/ng-react/src/testing/test-kernel.ts` delegates as `get: (token) => kernel.get(token)`,
-dropping the optional second parameter that `TestKernel extends Kernel` promises. A real
-`createKernel` honours it. The consequence is quiet and wrong: `MODULE_ID` resolves to ADR-2's
-`'app'` in any test that passes a requester, and a C8 suggestion built from it names the wrong
-module. Every test in this suite works around it by starting resolutions the way the app does —
-through a module's own `init` — rather than by passing a requester.
+`createTestKernel(...).get(token, requester)` used to **silently ignore `requester`**:
+`packages/ng-react/src/testing/test-kernel.ts` delegated as `get: (token) => kernel.get(token)`,
+dropping the optional second parameter that `TestKernel extends Kernel` promises, while a real
+`createKernel` honoured it. The consequence was quiet and wrong: `MODULE_ID` resolved to ADR-2's
+`'app'` in any test that passed a requester, and a C8 suggestion built from it named the wrong
+module.
 
-Not fixed in this PR because criterion 10 forbids touching `packages/ng-react/src/`, and a
-one-line kernel change smuggled into the PR that exists to prove the kernel needed no changes
-would be worse than the bug. It should be its own issue.
+Fixed by forwarding the argument. It is pinned by three differential tests in
+`packages/ng-react/src/testing/test-kernel.test.ts` — same descriptors, same call, once through
+`createKernel` and once through `createTestKernel`, with the real kernel as the oracle — covering
+C4's `MODULE_ID` across four differently-typed tokens and both directions of C8's suggestion.
+
+The suite here is unchanged by the fix and needed no edit: every test in it starts resolutions the
+way the app does, through a module's own `init`, so none of them ever passed a requester to a test
+kernel. That was the right shape independently of the defect, not a workaround for it.

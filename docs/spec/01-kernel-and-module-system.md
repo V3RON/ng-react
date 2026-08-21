@@ -553,4 +553,10 @@ Discrepancies found in this document and how they were resolved:
   suggestion built from it names the wrong module. Found while writing the acceptance suite and
   **deliberately not fixed there**: criterion 10 forbids changing `packages/ng-react/src/`, and
   a kernel edit smuggled into the PR that exists to prove the kernel needed none would be worse
-  than the bug. Recorded here and in `docs/acceptance.md`; it needs its own issue. See #24.
+  than the bug. **Resolved:** the argument is forwarded, and three differential tests — the same
+  descriptors resolved once through `createKernel` and once through `createTestKernel`, with the
+  real kernel as the oracle — pin C4's `MODULE_ID` across four differently-typed tokens and both
+  directions of the C8 suggestion. The delegations beside it (`status`, `subscribeStatus`,
+  `getAll`, `subscribeAll`, `ownerOf`, `epochOf`, `bumpEpoch`, `subscribeEpoch`, `inspect`,
+  `activate`, `whenStartupComplete`, `deactivate`, `hotReplace`, `retry`) were audited in the
+  same pass and all forward their full signature. See #24 and #49.

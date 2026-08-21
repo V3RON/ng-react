@@ -246,7 +246,16 @@ export function createTestKernel(options: TestKernelOptions): TestKernel {
     leaks: () => counters.report(),
     status: (ref) => kernel.status(ref),
     subscribeStatus: (ref, callback) => kernel.subscribeStatus(ref, callback),
-    get: (token) => kernel.get(token),
+    // **C4/ADR-2 (#49)**: `requester` is forwarded, not dropped. It is the
+    // one member of this object whose `Kernel` signature has a second,
+    // *optional* parameter, and an arrow written `(token) => …` satisfies
+    // that signature while silently substituting ADR-2's `'app'` for every
+    // resolution — so `MODULE_ID` lies inside every factory a test kernel
+    // reaches, and the C8 suggestion names `'app'` instead of the real
+    // requesting module. Both failures are silent: a value comes back, and
+    // the error message is merely *plausible*. Pinned by the
+    // "agrees with a real kernel" tests in `test-kernel.test.ts`.
+    get: (token, requester) => kernel.get(token, requester),
     getAll: (token) => kernel.getAll(token),
     // C5/C9/H6 (#17's additions to `Kernel`): pure delegation, deliberately.
     // See `TestKernel`'s doc comment for why `bumpEpoch` is not recorded.

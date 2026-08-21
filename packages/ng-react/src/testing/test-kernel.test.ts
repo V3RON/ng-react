@@ -7,11 +7,13 @@
 
 import { defineModule } from '../define-module';
 import type { ModuleDescriptor } from '../define-module';
+import { ResolutionError } from '../errors';
 import { ErrorSinkToken } from '../kernel/failure';
+import type { Kernel } from '../kernel/kernel';
 import { createKernel } from '../kernel/kernel';
 import { moduleRef } from '../module-ref';
 import { provide } from '../provider';
-import { createToken } from '../token';
+import { createToken, MODULE_ID } from '../token';
 import type { ModuleContext } from '../types';
 import { evaluationLog, recordEvaluation } from './evaluation-log';
 import { createTestKernel } from './test-kernel';
@@ -768,5 +770,215 @@ describe('evaluation-order instrumentation (acceptance criterion 9)', () => {
     await kernel.dispose();
     recordEvaluation('orders', 'orders/after-dispose.ts');
     expect(evaluationLog(kernel).map((event) => event.file)).toEqual(['orders/lifecycle.ts']);
+  });
+});
+
+// --- The requester a test kernel resolves on behalf of (#49) ---------------
+//
+// `TestKernel extends Kernel`, so `get(token, requester)` means exactly what
+// `Kernel.get` says it means: `requester` is **C4**'s resolution context, the
+// module on whose behalf the chain is started and therefore the value
+// `MODULE_ID` takes inside every factory in it (ADR-2's `'app'` only when it
+// is omitted).
+//
+// The harness's delegation dropped it. Nothing failed loudly: a value came
+// back, and C8's suggestion still read like a real diagnosis — it just named
+// `'app'`. The tests below are written as a **differential**: the same
+// descriptors, the same call, once through `createKernel` and once through
+// `createTestKernel`, with the real kernel's answer as the oracle. A harness
+// that invents its own resolution context cannot pass them, and no amount of
+// agreement between two wrong test kernels can fake it.
+//
+// ADR-10 / AGENTS.md §9: four *differently* typed tokens — an object, a
+// number, a readonly array, and a service built out of another of them — so
+// "the requester reached the factory" is proven on more than one shape. A
+// suite in which every token is `Token<unknown>` is how the ADR-10 defect
+// survived stage 1.
+
+/** Per-module audit context — an object-typed C4 consumer. */
+interface AuditTrail {
+  readonly builtFor: string;
+  entries(): readonly string[];
+}
+
+/** `payments`' tokens, all four differently typed. */
+const AuditTrailToken = createToken<AuditTrail>('payments/AuditTrail');
+const ChargeCeilingToken = createToken<number>('payments/ChargeCeiling');
+const ScopeLabelsToken = createToken<readonly string[]>('payments/ScopeLabels');
+/** A `PaymentGateway` built *out of* the audit trail — C4 through a nested dep. */
+const AuditedGatewayToken = createToken<PaymentGateway>('payments/AuditedGateway');
+/**
+ * Deliberately **never provided**, and deliberately prefixed `payments/`:
+ * this is the C8 token. The prefix is what
+ * `ProviderRegistry.findModuleByTokenLabelPrefix` keys the suggestion off.
+ */
+const RefundGatewayToken = createToken<PaymentGateway>('payments/RefundGateway');
+
+/** Per-module ceilings, so `ChargeCeilingToken` has a *different* right answer per requester. */
+const CEILINGS: Readonly<Record<string, number>> = { orders: 250, app: 25 };
+
+/**
+ * `payments` (providing everything above but the refund gateway) plus
+ * `orders`, which declares `payments` in `dependsOn` only when asked to —
+ * the C8 suggestion fires precisely when it does not.
+ */
+function requesterModules(options: { readonly ordersDeclaresPayments: boolean }): readonly ModuleDescriptor[] {
+  const payments = defineModule({
+    id: paymentsRef,
+    load: 'eager',
+    critical: true,
+    providers: () => [
+      provide(AuditTrailToken, {
+        scope: 'transient',
+        deps: [MODULE_ID],
+        factory: (moduleId: string) => ({
+          builtFor: moduleId,
+          entries: () => Object.freeze([`opened:${moduleId}`]),
+        }),
+      }),
+      provide(ChargeCeilingToken, {
+        scope: 'transient',
+        deps: [MODULE_ID],
+        factory: (moduleId: string) => CEILINGS[moduleId] ?? 0,
+      }),
+      provide(ScopeLabelsToken, {
+        scope: 'transient',
+        deps: [MODULE_ID],
+        factory: (moduleId: string) => Object.freeze([`scope:${moduleId}`, 'scope:payments']),
+      }),
+      provide(AuditedGatewayToken, {
+        scope: 'transient',
+        // C4 must survive one hop: this factory never sees `MODULE_ID`
+        // itself, only the audit trail built from it.
+        deps: [AuditTrailToken],
+        factory: (audit: AuditTrail) => ({
+          charge: (cents: number) => `${audit.builtFor}:${String(cents)}`,
+        }),
+      }),
+    ],
+  });
+
+  const orders = defineModule({
+    id: ordersRef,
+    dependsOn: options.ordersDeclaresPayments ? [paymentsRef] : [],
+    load: 'eager',
+    critical: true,
+  });
+
+  return [payments, orders];
+}
+
+/**
+ * Everything `get(token, 'orders')` can be asked about the four tokens,
+ * as one comparable value. Both kernels are put through this identical
+ * function, so the differential compares behaviour rather than two
+ * separately-written assertion lists.
+ */
+function requesterSnapshot(kernel: Kernel): Record<string, unknown> {
+  return {
+    auditBuiltFor: kernel.get(AuditTrailToken, 'orders').builtFor,
+    auditEntries: kernel.get(AuditTrailToken, 'orders').entries(),
+    ceiling: kernel.get(ChargeCeilingToken, 'orders'),
+    scopeLabels: kernel.get(ScopeLabelsToken, 'orders'),
+    nestedCharge: kernel.get(AuditedGatewayToken, 'orders').charge(100),
+    // ADR-2: omitting the argument must still mean `'app'`. Forwarding
+    // `undefined` has to land on `Kernel.get`'s default, not on `undefined`.
+    defaultedBuiltFor: kernel.get(AuditTrailToken).builtFor,
+    defaultedCeiling: kernel.get(ChargeCeilingToken),
+  };
+}
+
+/** The `ResolutionError` thrown by `get(RefundGatewayToken, requester)`, or a failure if none was. */
+function resolutionErrorFrom(kernel: Kernel, requester: string): ResolutionError {
+  try {
+    kernel.get(RefundGatewayToken, requester);
+  } catch (error) {
+    if (error instanceof ResolutionError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error(`get(${RefundGatewayToken.label}, '${requester}') resolved; C8 expected it to throw.`);
+}
+
+describe('createTestKernel: get(token, requester) — C4 and C8 (#49)', () => {
+  it('C4: a test kernel and a real kernel agree on what a MODULE_ID-taking factory sees for get(token, requester)', async () => {
+    const real = createKernel({ modules: requesterModules({ ordersDeclaresPayments: true }) });
+    await real.whenStartupComplete();
+
+    const test = createTestKernel({ modules: requesterModules({ ordersDeclaresPayments: true }) });
+    await test.whenStartupComplete();
+
+    // The differential. `createKernel` is the contract `TestKernel extends
+    // Kernel` promises to honour, so the real kernel is the oracle.
+    const fromReal = requesterSnapshot(real);
+    expect(requesterSnapshot(test)).toEqual(fromReal);
+
+    // …and spelled out, so a failure is readable without running the real
+    // kernel in a debugger, and so a *mutually* wrong pair cannot pass.
+    expect(fromReal).toEqual({
+      auditBuiltFor: 'orders',
+      auditEntries: ['opened:orders'],
+      ceiling: 250,
+      scopeLabels: ['scope:orders', 'scope:payments'],
+      nestedCharge: 'orders:100',
+      defaultedBuiltFor: 'app',
+      defaultedCeiling: 25,
+    });
+
+    await test.dispose();
+    await real.deactivate(ordersRef);
+    await real.deactivate(paymentsRef);
+  });
+
+  it("C8: the suggestion from a test kernel names the requesting module, not ADR-2's 'app'", async () => {
+    const modules = requesterModules({ ordersDeclaresPayments: false });
+    const real = createKernel({ modules });
+    await real.whenStartupComplete();
+    const test = createTestKernel({ modules: requesterModules({ ordersDeclaresPayments: false }) });
+    await test.whenStartupComplete();
+
+    const fromTest = resolutionErrorFrom(test, 'orders');
+
+    // The exact string, per AGENTS.md §7.5 — C8 is one of the messages the
+    // spec quotes, and "errors are a feature".
+    expect(fromTest.message).toBe(
+      "Cannot resolve payments/RefundGateway: no provider. 'payments' is registered but not listed in " +
+        "dependsOn of 'orders'.",
+    );
+    expect(fromTest.message).toBe(resolutionErrorFrom(real, 'orders').message);
+    // The failure mode this test exists for: a dropped requester produces a
+    // message that *reads* like a real diagnosis and names the wrong module.
+    expect(fromTest.message).not.toContain("dependsOn of 'app'");
+    // C8's `moduleId` is the requester too, so a test routing this error
+    // through F4 attributes it to the right module.
+    expect(fromTest.moduleId).toBe('orders');
+    expect(fromTest.path).toEqual(['payments/RefundGateway']);
+
+    await test.dispose();
+    await real.deactivate(ordersRef);
+    await real.deactivate(paymentsRef);
+  });
+
+  it('C8: with the dependency declared there is no suggestion, from a test kernel as from a real one', async () => {
+    // The suppression branch keys off the *requester*'s `dependsOn`. Drop
+    // the requester and it consults `'app'`, which declares nothing — so the
+    // suggestion appears where it must not, advising a `dependsOn` entry
+    // `orders` already has. The opposite direction to the test above, and it
+    // needs its own assertion because one message being wrong does not
+    // imply the other is.
+    const test = createTestKernel({ modules: requesterModules({ ordersDeclaresPayments: true }) });
+    await test.whenStartupComplete();
+    const real = createKernel({ modules: requesterModules({ ordersDeclaresPayments: true }) });
+    await real.whenStartupComplete();
+
+    const fromTest = resolutionErrorFrom(test, 'orders');
+    expect(fromTest.message).toBe('Cannot resolve payments/RefundGateway: no provider.');
+    expect(fromTest.message).toBe(resolutionErrorFrom(real, 'orders').message);
+    expect(fromTest.message).not.toContain('dependsOn of');
+
+    await test.dispose();
+    await real.deactivate(ordersRef);
+    await real.deactivate(paymentsRef);
   });
 });
