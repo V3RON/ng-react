@@ -34,8 +34,21 @@ those numbers are the contract between issues, code, and tests.
     └── react/                   # @ng-react/demo-react — Vite + React 19 demo & acceptance app
 ```
 
-Additional packages arrive in later stages (`packages/eslint-config-modules`,
-`packages/create-module`). Create them only in the stage that owns them.
+The workspace has since grown the packages the staged plan created. As of day 3:
+
+```
+packages/
+├── ng-react/                    # @ng-react/kernel — the library
+├── eslint-config-modules/       # @ng-react/eslint-config-modules — the B1-B3 lint preset (stage 7)
+├── create-module/               # @ng-react/create-module — the B4 generator (stage 7)
+├── auth/  orders/  payments/  debug/   # @app/<id> — the demo's feature modules (stage 8)
+└── nav/                         # @app/nav — the PoC navigation module (criterion 10)
+```
+
+The five `@app/*` packages are what every acceptance test is written against, and each was
+**generated with `pnpm create-module`** rather than hand-written — if a generated package needs a
+hand-edit to pass `pnpm verify`, that is a generator bug and belongs in `packages/create-module`.
+Create new packages only in the task that owns them.
 
 ---
 
@@ -258,7 +271,10 @@ app use the bare feature name (`auth`, `orders`) per spec §4. Token labels are
 
 ### Branch and commit conventions
 
-- Branch: `stage-<n>/<task-slug>` — e.g. `stage-2/resolution-engine`.
+- Branch: `stage-<n>/<task-slug>` for a task under a stage — e.g. `stage-2/resolution-engine`.
+  For a defect or a feature that is not part of the staged plan, `fix/<issue>-<slug>` or
+  `feature/<slug>` — e.g. `fix/49-test-kernel-requester`. The dispatching issue names the branch;
+  it wins over this line if they disagree.
 - Commit subject: `<area>: <imperative summary>` — e.g. `container: add resolution engine with three scopes`.
 - Commit body: reference the spec requirement ids implemented and `Closes #<issue>`.
 
