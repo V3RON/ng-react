@@ -75,7 +75,17 @@ describe('demo app', () => {
     // A1's real content is "a lazy module being activated must never observe a
     // dependency that is registered but not ready", which is an ordering
     // claim; asserting the set would leave it untested.
-    expect(sequenceOf(log, 'ready')).toEqual(['auth', 'payments', 'orders']);
+    //
+    // Filtered to the three modules this claim is about. Since #24 the app
+    // also registers `nav` and `shell`, both eager and non-critical, and
+    // `whenStartupComplete` deliberately does *not* wait for those (A3 gates
+    // on eager **critical** modules only) — so their `ready` transitions
+    // interleave with the lazy pair's in a way that is real and irrelevant
+    // here. Filtering keeps the assertion an *ordering* claim about A1
+    // instead of a snapshot of startup timing.
+    expect(
+      sequenceOf(log, 'ready').filter((id) => ['auth', 'payments', 'orders'].includes(id)),
+    ).toEqual(['auth', 'payments', 'orders']);
 
     // **C5**: and the contribution collection grew with them. `debug` is
     // absent because F3 withdrew its row.
@@ -176,7 +186,11 @@ describe('demo app', () => {
     }));
     await kernel.whenStartupComplete();
 
-    expect(armed).toEqual(['auth', 'debug', 'payments', 'orders']);
+    // `nav` is armed like any other module package — criterion 10's PoC
+    // navigation module has no privileges, and that includes no exemption
+    // from H2. `shell` is absent because it is app source rather than a
+    // module package; see the note in `composition-root.ts`.
+    expect(armed).toEqual(['auth', 'debug', 'payments', 'orders', 'nav']);
 
     // Armed with the *kernel*, not merely armed: firing a module's callback
     // with a replacement descriptor has to reach `kernel.hotReplace`. A root

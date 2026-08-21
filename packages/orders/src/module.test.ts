@@ -133,7 +133,11 @@ describe('orders module', () => {
 
     // C5: `orders` contributes one row, and it reports the live service.
     expect(kernel.getAll(DiagnosticPanelToken).map((panel) => panel.describe())).toEqual([
-      '1 placed, 2 session change(s) seen',
+      // The trailing clause is the `persistent: true` store this module gained
+      // in #24 so acceptance criterion 3's H3/H4 clause has something in the
+      // cascade of an `orders` edit to preserve. One note: `init` seeds it
+      // exactly once, and only while it is empty.
+      '1 placed, 2 session change(s) seen, 1 note(s) held (persistent: true)',
     ]);
 
     await kernel.dispose();

@@ -290,6 +290,8 @@ The event bus implementation and typed event map (spec 02 — this spec only req
 3. `persistent: true` transfer semantics (H4): structural copy of a plain-object state snapshot vs a user-supplied `transfer(oldState) => newState` function. Leaning: snapshot by default, optional transfer function for migrations between edits.
 4. Monorepo tooling baseline (pnpm workspaces + turbo vs Nx) — affects how B1/B3 are implemented but nothing in the kernel API.
 
+**All four are decided. The resolutions are recorded in §17 below**, which is the "record decisions in this doc" half of this section's own instruction, together with every discrepancy found in this document while implementing it. The full rationale for each lives in `AGENTS.md` under the matching ADR id (`ADR-1`..`ADR-4` for the four questions above); `AGENTS.md` §6 is also where they are declared not to be re-litigated in a PR. Which criterion each decision is exercised by is recorded in `docs/acceptance.md`.
+
 ---
 
 ## 17. Decisions recorded during implementation
@@ -516,3 +518,39 @@ Discrepancies found in this document and how they were resolved:
   check not at all, and "no leak warnings in the console" is vacuous rather than passing.
   Discharging criterion 4's leak half at the demo level needs a test-kernel-driven harness
   or a kernel option; task #24 owns it.
+- **§15 criterion 10 / §6 — a lazy module cannot contribute the route that activates it.**
+  §5.2 and §12 R3 together say route registration is an ordinary C5 contribution and the root
+  navigator is `useServiceAll(RouteConfigToken)`. But a contribution is registered when its
+  module's `providers` thunk runs, which is **at activation** (C3/D1) — so a route contributed
+  by `orders` exists only while `orders` is already running, and a table built solely from
+  feature-module contributions can never hold the route whose job is to *trigger* the first
+  activation. **Resolved, and no kernel primitive is missing:** §6 already says where the
+  trigger comes from — "the navigation module activates a module when a **parent route config**
+  maps a matched path to its ref" — so entry routes belong to a module that is already active.
+  The demo gives them to an app-shell module (`apps/react/src/shell/`, §3's "a folder treated as
+  one"), and each feature module contributes its own child routes once up. §15.10's silence on
+  this is what misleads; the model is right. See issue #24 and `docs/acceptance.md`.
+- **§15 criterion 5 — its two halves cannot both be true of criterion 1's graph.** It asks that
+  deleting a provider `orders` depends on produce "full chain **plus** actionable suggestion",
+  but C8 appends the suggestion *only* when the failing token's module is registered and **not**
+  in the requester's `dependsOn` — and §15.1 requires `orders` to declare `payments`. On that
+  graph the deletion correctly yields the chain and no suggestion: the dependency is already
+  declared, so "add its ref to `dependsOn`" would not be actionable. C8's own quoted example is
+  reachable only from a graph where `orders` does not declare `payments`. **Resolved:** both are
+  asserted, and neither is presented as the whole criterion. See issue #24.
+- **§15 criterion 4 — `payments` had no `singleton` provider, and since #34 the distinction it
+  draws no longer exists.** The criterion says "a `singleton` provider of `payments`"; both of
+  that module's providers were `module`-scoped. Since #34 a module-owned `singleton` lives for
+  its module's *activation* and H4 discards both scopes on a hot replace, so the two are
+  indistinguishable for a module-owned provider. **Resolved:** `payments/PaymentGateway` is
+  declared `singleton` so the criterion is literally checkable; it is a naming change, not a
+  behaviour change, and the `module`-scoped half of `persistent: true` remains covered by the
+  draft store. See issue #24.
+- **§12 R4 — `createTestKernel(...).get(token, requester)` silently ignores `requester`.** The
+  test kernel delegates as `get: (token) => kernel.get(token)`, dropping the optional second
+  parameter that `TestKernel extends Kernel` promises and that a real `createKernel` honours.
+  `MODULE_ID` (C4) therefore resolves to ADR-2's `'app'` in any test that passes one, and a C8
+  suggestion built from it names the wrong module. Found while writing the acceptance suite and
+  **deliberately not fixed there**: criterion 10 forbids changing `packages/ng-react/src/`, and
+  a kernel edit smuggled into the PR that exists to prove the kernel needed none would be worse
+  than the bug. Recorded here and in `docs/acceptance.md`; it needs its own issue. See #24.

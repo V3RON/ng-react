@@ -23,6 +23,7 @@ import { createKernel, createViteHmrAdapter } from '@ng-react/kernel';
 import type { Kernel, ModuleDescriptor, ModuleRef, ViteHotContext } from '@ng-react/kernel';
 import { AuthModule } from '@app/auth/contract';
 import { DebugModule } from '@app/debug/contract';
+import { NavModule } from '@app/nav/contract';
 import { OrdersModule } from '@app/orders/contract';
 import { PaymentsModule } from '@app/payments/contract';
 import { acceptHotUpdate as acceptAuthHotUpdate, module as authModule } from '@app/auth/module';
@@ -33,6 +34,13 @@ import {
   acceptHotUpdate as acceptPaymentsHotUpdate,
   module as paymentsModule,
 } from '@app/payments/module';
+import { acceptHotUpdate as acceptNavHotUpdate, module as navModule } from '@app/nav/module';
+// **Not a package, and deliberately imported by a relative path.** The app
+// shell (spec §3: "a folder treated as one") owns the demo's top-level route
+// table; see `shell/module.ts` for why a lazy module cannot contribute the
+// route that activates it. B1 governs cross-*package* imports and has nothing
+// to say about an application's own folders.
+import { module as shellModule, ShellModule } from './shell/module';
 import { attachLifecycleLog } from './lifecycle-log';
 import type { LifecycleLog } from './lifecycle-log';
 
@@ -51,6 +59,12 @@ export const appModules: readonly ModuleDescriptor[] = [
   debugModule,
   paymentsModule,
   ordersModule,
+  // **Criterion 10**: the PoC navigation module, registered exactly like a
+  // feature module and with no privileges of any kind. `nav` is eager because
+  // the navigator has to be able to render the route that triggers the first
+  // lazy activation; `shell` is eager because it *owns* that route.
+  navModule,
+  shellModule,
 ];
 
 /** Every ref the lifecycle log watches, in declaration order. Not exported: the UI names refs through their contracts. */
@@ -59,6 +73,8 @@ const appModuleRefs: readonly ModuleRef[] = [
   DebugModule,
   PaymentsModule,
   OrdersModule,
+  NavModule,
+  ShellModule,
 ];
 
 /**
@@ -146,6 +162,11 @@ export function createAppKernel(
   acceptDebugHotUpdate(kernel, hotFor('debug'));
   acceptPaymentsHotUpdate(kernel, hotFor('payments'));
   acceptOrdersHotUpdate(kernel, hotFor('orders'));
+  acceptNavHotUpdate(kernel, hotFor('nav'));
+  // No `acceptHotUpdate` for the shell: it is app source, not a module
+  // package, so Vite's ordinary React Fast Refresh already covers its screens
+  // (**H1**) and its descriptor is re-evaluated with the composition root.
+  // Emitting a hot block for it would be a second mechanism for one concern.
 
   const { log } = attachLifecycleLog(kernel, appModuleRefs);
 
