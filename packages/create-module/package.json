@@ -1,0 +1,23 @@
+{
+  "name": "@ng-react/create-module",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "description": "Spec 01 §13 B4: the create-module generator. Emits a module package carrying every blessed pattern in the spec — the §4 exports map, the contract/module split, ADR-7 thunks, C4/C5/C7/H3 providers, an L2 lifecycle with no hand-written dispose, the H2 hot block, and an R4 createTestKernel test.",
+  "bin": {
+    "create-module": "./bin/create-module.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "main": "./src/index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit --pretty"
+  },
+  "devDependencies": {
+    "@ng-react/eslint-config-modules": "workspace:*",
+    "@ng-react/kernel": "workspace:*"
+  }
+}

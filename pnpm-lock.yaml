@@ -76,6 +76,15 @@ importers:
         specifier: ^8.2.2
         version: 8.2.2(@types/node@24.13.3)
 
+  packages/create-module:
+    devDependencies:
+      '@ng-react/eslint-config-modules':
+        specifier: workspace:*
+        version: link:../eslint-config-modules
+      '@ng-react/kernel':
+        specifier: workspace:*
+        version: link:../ng-react
+
   packages/eslint-config-modules:
     dependencies:
       '@typescript-eslint/utils':
