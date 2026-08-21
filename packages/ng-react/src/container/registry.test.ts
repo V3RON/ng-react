@@ -154,21 +154,107 @@ describe('ProviderRegistry', () => {
       });
     });
 
-    it('order B — override registered first, plain registered second: override still wins (later plain is rejected)', () => {
+    it('order B — override registered first, plain registered second: override still wins and the plain provide is superseded, not rejected (#37)', () => {
       const registry = new ProviderRegistry();
       const token = createToken<OrderService>('orders/OrderService');
 
       registry.register('billing', [provide(token, { override: true, factory: orderService })]);
 
-      expect(() => registry.register('orders', [provide(token, { factory: orderService })])).toThrow(
-        DuplicateProviderError,
-      );
+      // #37: the loser is ignored, not fatal. Providers register during
+      // activation, so throwing here quarantined the very module the
+      // override was mocking for.
+      expect(() => registry.register('orders', [provide(token, { factory: orderService })])).not.toThrow();
 
       // The override registration from 'billing' is still the effective
       // provider — the later plain registration never took effect.
       const registered = registry.getProvider(token);
       expect(registered?.owner).toBe('billing');
       expect(registered?.record.override).toBe(true);
+    });
+
+    it('C6/#37: the superseded plain provide is visible in inspect() with overriddenBy, identically in both registration orders', () => {
+      // The reproduction from #37, both ways round. `mocks` wins either
+      // way (that part always worked); what changed is that `payments` is
+      // no longer rejected, and that the displacement is recorded rather
+      // than silent.
+      const token = createToken<PaymentGateway>('payments/PaymentGateway');
+      const real = (): PaymentGateway => ({ charge: async () => {} });
+      const mock = (): PaymentGateway => ({ charge: async () => {} });
+
+      const overrideFirst = new ProviderRegistry();
+      overrideFirst.register('mocks', [provide(token, { override: true, factory: mock })]);
+      overrideFirst.register('payments', [provide(token, { factory: real })]);
+
+      const realFirst = new ProviderRegistry();
+      realFirst.register('payments', [provide(token, { factory: real })]);
+      realFirst.register('mocks', [provide(token, { override: true, factory: mock })]);
+
+      const expected = [
+        { tokenLabel: 'payments/PaymentGateway', kind: 'provide', scope: 'singleton', owner: 'mocks', override: true },
+        {
+          tokenLabel: 'payments/PaymentGateway',
+          kind: 'provide',
+          scope: 'singleton',
+          owner: 'payments',
+          override: false,
+          overriddenBy: 'mocks',
+        },
+      ];
+      expect(overrideFirst.inspect().providers).toEqual(expected);
+      expect(realFirst.inspect().providers).toEqual(expected);
+      expect(overrideFirst.getProvider(token)?.owner).toBe('mocks');
+      expect(realFirst.getProvider(token)?.owner).toBe('mocks');
+    });
+
+    it('C6/#37: a superseded provider is never resolvable — getProvider, ownerOf and hasToken all report the override', () => {
+      const registry = new ProviderRegistry();
+      const token = createToken<PaymentGateway>('payments/PaymentGateway');
+      registry.register('mocks', [provide(token, { override: true, factory: () => ({ charge: async () => {} }) })]);
+      registry.register('payments', [provide(token, { factory: () => ({ charge: async () => {} }) })]);
+
+      expect(registry.getProvider(token)?.record.override).toBe(true);
+      expect(registry.ownerOf(token)).toBe('mocks');
+      expect(registry.hasToken(token)).toBe(true);
+    });
+
+    it('C6/#37: an override earlier in the same register() batch supersedes a later plain provide instead of failing the batch', () => {
+      // The same rule has to hold within one batch: a batch that threw here
+      // would leave the whole module unregistered (registration is atomic),
+      // which is the #37 failure mode with a different trigger.
+      const registry = new ProviderRegistry();
+      const token = createToken<OrderService>('orders/OrderService');
+      const other = createToken<AnalyticsSink>('orders/AnalyticsSink');
+
+      expect(() =>
+        registry.register('root', [
+          provide(token, { override: true, factory: orderService }),
+          provide(token, { factory: orderService }),
+          provide(other, { factory: (): AnalyticsSink => ({ track: () => {} }) }),
+        ]),
+      ).not.toThrow();
+
+      expect(registry.getProvider(token)?.record.override).toBe(true);
+      // The rest of the batch committed: the superseded record did not
+      // abort registration.
+      expect(registry.getProvider(other)?.owner).toBe('root');
+    });
+
+    it('C6/#37: withdrawing the superseded module drops its row; withdrawing the override does not resurrect it', () => {
+      const registry = new ProviderRegistry();
+      const token = createToken<PaymentGateway>('payments/PaymentGateway');
+      registry.register('mocks', [provide(token, { override: true, factory: () => ({ charge: async () => {} }) })]);
+      registry.register('payments', [provide(token, { factory: () => ({ charge: async () => {} }) })]);
+
+      registry.withdraw('payments');
+      expect(registry.inspect().providers).toEqual([
+        { tokenLabel: 'payments/PaymentGateway', kind: 'provide', scope: 'singleton', owner: 'mocks', override: true },
+      ]);
+
+      // Re-register, then withdraw the override instead: the superseded
+      // record is a diagnostic, never a fallback provider.
+      registry.register('payments', [provide(token, { factory: () => ({ charge: async () => {} }) })]);
+      registry.withdraw('mocks');
+      expect(registry.getProvider(token)).toBeUndefined();
     });
 
     it('registering override: true when nothing exists yet succeeds without error', () => {

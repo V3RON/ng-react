@@ -75,6 +75,14 @@ interface CachedInstance {
   readonly value: unknown;
   readonly record: AnyProviderRecord;
   readonly ownerId: string;
+  /**
+   * Monotonic construction sequence number, resolver-wide. Only reason it
+   * exists: `disposeModuleInstances` disposes a module's `singleton` and
+   * `module`-scoped instances together in one reverse-construction order,
+   * and the two scopes live in two different caches, so the order has to be
+   * recoverable after merging them.
+   */
+  readonly seq: number;
 }
 
 /** Renders a value for an error message: `string 'x'`, `number 42`, … */
@@ -102,13 +110,21 @@ export class Resolver {
   private readonly disposeTimeoutMs: number;
   private readonly getTopologicalIndex: (moduleId: string) => number;
 
-  // C2 singleton scope: one instance for the app lifetime. Keyed by the
-  // provider's own frozen `ProviderRecord` object, which is a stable,
-  // unique identity per `provide()`/`contribute()` call — this lets the
-  // same map serve both single-provider and contribution instances without
-  // token-label collisions.
+  // C2 singleton scope: one instance for the app lifetime **of the owning
+  // module's activation** — see `disposeModuleInstances` for why H4 makes
+  // that qualifier part of the contract rather than a weakening of it.
+  // Keyed by the provider's own frozen `ProviderRecord` object, which is a
+  // stable, unique identity per `provide()`/`contribute()` call — this lets
+  // the same map serve both single-provider and contribution instances
+  // without token-label collisions.
   private readonly singletonCache = new Map<AnyProviderRecord, CachedInstance>();
-  private readonly singletonOrder: AnyProviderRecord[] = [];
+  // Construction order across *all* singletons, for `dispose`'s reverse
+  // teardown. Rebuilt (never spliced blindly) when
+  // `disposeModuleInstances` removes a module's entries from the middle, so
+  // it always holds exactly the records still present in `singletonCache`.
+  private singletonOrder: AnyProviderRecord[] = [];
+  /** Feeds `CachedInstance.seq`. */
+  private nextSeq = 0;
 
   // C2 module scope: one instance per *providing* module's activation
   // (i.e. keyed by the provider's owner — provenance — never by the
@@ -188,36 +204,98 @@ export class Resolver {
   }
 
   /**
-   * C7: disposes every `module`-scoped instance owned by `moduleId`, in
-   * reverse construction order. A no-op if the module never constructed
-   * anything. After this resolves, the next resolution of one of that
-   * module's `module`-scoped providers constructs a fresh instance.
+   * C7 + **H4**: disposes and discards every instance owned by `moduleId`
+   * — `module`-scoped **and** `singleton` — in reverse construction order
+   * across both scopes. A no-op if the module never constructed anything.
+   * After this resolves, the next resolution of one of that module's
+   * providers constructs a fresh instance.
+   *
+   * ### The lifetime this pins down (was #34)
+   *
+   * **A module-owned `singleton` lives for its owning module's activation,
+   * not for the process:** deactivating the module disposes and discards
+   * it, and re-activating constructs a new one.
+   *
+   * C7 alone reads "app/kernel teardown for `singleton`", and on that
+   * reading not disposing here is defensible. H4 (§11) settles it the other
+   * way and is the more specific rule: when a module is re-activated
+   * "every provider instance it registered is disposed and discarded
+   * **regardless of scope** — including `singleton`… the next resolution
+   * constructs from the new factory". A deactivate/re-activate pair is the
+   * same shape as an HMR re-activation, so the two cannot have different
+   * answers without the container's behaviour depending on *why* the module
+   * went away.
+   *
+   * The alternative — leaving the instance cached — was not a smaller
+   * behaviour, it was a broken one: the re-run `providers` thunk yields
+   * fresh `ProviderRecord` objects, `singletonCache` is keyed by record
+   * identity, so the lookup missed and constructed a *second* instance
+   * while the first stayed cached, undisposed and unreachable. "App
+   * lifetime" was already not what the old code delivered.
+   *
+   * `transient` is untouched, per C7: the container never owned those.
    */
-  async disposeModuleScope(moduleId: string): Promise<void> {
+  async disposeModuleInstances(moduleId: string): Promise<void> {
+    const owned: CachedInstance[] = [];
+
     const order = this.moduleScopedOrder.get(moduleId);
     const cache = this.moduleScopedCache.get(moduleId);
     this.moduleScopedOrder.delete(moduleId);
     this.moduleScopedCache.delete(moduleId);
-    if (order === undefined || cache === undefined) {
+    if (order !== undefined && cache !== undefined) {
+      for (const record of order) {
+        const cached = cache.get(record);
+        if (cached !== undefined) {
+          owned.push(cached);
+        }
+      }
+    }
+
+    // H4: the singleton half. Everything is removed from the cache *before*
+    // any disposal runs (matching `dispose` below and ADR-1's "already
+    // removed by the caller" note), and `singletonOrder` is rebuilt from
+    // the survivors so that a later `dispose()` cannot revisit an entry
+    // torn down here — that is what keeps the two paths from
+    // double-disposing one instance.
+    if (this.singletonOrder.length > 0) {
+      const survivors: AnyProviderRecord[] = [];
+      for (const record of this.singletonOrder) {
+        const cached = this.singletonCache.get(record);
+        if (cached !== undefined && cached.ownerId === moduleId) {
+          this.singletonCache.delete(record);
+          owned.push(cached);
+        } else {
+          survivors.push(record);
+        }
+      }
+      this.singletonOrder = survivors;
+    }
+
+    if (owned.length === 0) {
       return;
     }
-    for (const record of [...order].reverse()) {
-      const cached = cache.get(record);
-      if (cached !== undefined) {
-        await this.disposeInstance(cached);
-      }
+    // One reverse-construction order across both scopes: a module-scoped
+    // instance built after a singleton is disposed before it, which is what
+    // "reverse construction order" means once the two caches are merged.
+    owned.sort((a, b) => b.seq - a.seq);
+    for (const cached of owned) {
+      await this.disposeInstance(cached);
     }
   }
 
   /**
-   * C7: container teardown — disposes every `singleton` instance, in
-   * reverse construction order. `module`-scoped instances are not touched
-   * here; they are disposed via `disposeModuleScope` as each module is
-   * torn down (a kernel/stage-3 orchestration concern).
+   * C7: container teardown — disposes every `singleton` instance still
+   * cached, in reverse construction order. `module`-scoped instances are
+   * not touched here; they are disposed via `disposeModuleInstances` as
+   * each module is torn down (a kernel/stage-3 orchestration concern).
+   *
+   * "Still cached" is the load-bearing word after #34: a module that was
+   * already deactivated took its singletons with it, so this disposes the
+   * survivors only and never sees an instance twice.
    */
   async dispose(): Promise<void> {
     const order = [...this.singletonOrder].reverse();
-    this.singletonOrder.length = 0;
+    this.singletonOrder = [];
     for (const record of order) {
       const cached = this.singletonCache.get(record);
       this.singletonCache.delete(record);
@@ -318,8 +396,9 @@ export class Resolver {
         throw this.buildFactoryError(cause);
       }
 
+      const seq = this.nextSeq++;
       if (record.scope === 'singleton') {
-        this.singletonCache.set(record, { value, record, ownerId: entry.owner });
+        this.singletonCache.set(record, { value, record, ownerId: entry.owner, seq });
         this.singletonOrder.push(record);
       } else if (record.scope === 'module') {
         let cache = this.moduleScopedCache.get(entry.owner);
@@ -327,7 +406,7 @@ export class Resolver {
           cache = new Map();
           this.moduleScopedCache.set(entry.owner, cache);
         }
-        cache.set(record, { value, record, ownerId: entry.owner });
+        cache.set(record, { value, record, ownerId: entry.owner, seq });
         let order = this.moduleScopedOrder.get(entry.owner);
         if (order === undefined) {
           order = [];

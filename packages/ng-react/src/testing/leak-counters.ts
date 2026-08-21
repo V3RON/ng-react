@@ -16,20 +16,24 @@
 //  - `effect`   — one `ctx.effect(...)` registration (L2), released when its
 //    cleanup runs (L3).
 //  - `instance` — one **`module`-scoped** provider instance (C2/C7),
-//    released when the container disposes it (`disposeModuleScope`).
+//    released when the container disposes it (`disposeModuleInstances`).
 //
 // **Deliberate scope limit on `instance`.** Only `module`-scoped instances
-// are counted. `singleton`-scoped instances owned by a module are *not*,
-// because the container does not dispose them when their owning module is
-// deactivated (issue #34) — counting them would make `balanced` permanently
-// `false` after any `dispose()`, which is a container defect, not a leak
-// this harness found. H4 already requires that to change ("every provider
-// instance it registered is disposed and discarded regardless of scope");
-// when it does, this file extends by instrumenting `singleton` records the
-// same way `module`-scoped ones are instrumented below, and `instance`
-// silently becomes the wider count. `transient` is out by C7: the container
-// never disposes a transient instance, so its lifetime is the caller's and
-// there is nothing here to balance.
+// are counted. `singleton`-scoped instances owned by a module are *not*.
+// The original reason — the container never disposed a module's singletons,
+// so counting them would have made `balanced` permanently `false` after any
+// `dispose()` — is **gone as of #34**: `disposeModuleInstances` now disposes
+// them with the owning module, exactly as H4 requires ("every provider
+// instance it registered is disposed and discarded regardless of scope").
+// Lifting the limit is therefore now possible: change the guard in
+// `instrumentRecords` below to exclude only `transient`. It is left in place
+// here because widening the count is a *reporting* decision, not a container
+// one — a live module's singleton becomes an outstanding `instance`, so
+// `balanced` starts meaning "nothing is alive" rather than "nothing leaked",
+// and three existing expectations move with it. That belongs in the issue
+// that owns H7's counters, not in the container fix. `transient` stays out
+// by C7 either way: the container never disposes a transient instance, so
+// its lifetime is the caller's and there is nothing here to balance.
 //
 // **Gating is structural, not a runtime flag.** When the kernel is not in
 // dev mode, `test-kernel.ts` does not install any of the wrappers below: the

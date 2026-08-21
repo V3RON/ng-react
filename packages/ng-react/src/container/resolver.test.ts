@@ -421,7 +421,7 @@ describe('Resolver', () => {
   });
 
   describe('C7: disposal', () => {
-    it('disposeModuleScope disposes module-scoped instances owned by that module, in reverse construction order', async () => {
+    it('C7: disposeModuleInstances disposes module-scoped instances owned by that module, in reverse construction order', async () => {
       const registry = makeRegistry();
       const order: string[] = [];
       const firstToken = createToken<Logger>('orders/First');
@@ -446,7 +446,7 @@ describe('Resolver', () => {
       resolver.resolve(firstToken, { requester: 'orders' });
       resolver.resolve(secondToken, { requester: 'orders' });
 
-      await resolver.disposeModuleScope('orders');
+      await resolver.disposeModuleInstances('orders');
 
       expect(order).toEqual(['second', 'first']);
     });
@@ -465,7 +465,7 @@ describe('Resolver', () => {
       const resolver = makeResolver(registry);
       resolver.resolve(token, { requester: 'orders' });
 
-      await resolver.disposeModuleScope('orders');
+      await resolver.disposeModuleInstances('orders');
       await resolver.dispose();
 
       expect(instanceDispose).not.toHaveBeenCalled();
@@ -486,7 +486,7 @@ describe('Resolver', () => {
       const resolver = makeResolver(registry);
       resolver.resolve(token, { requester: 'orders' });
 
-      await resolver.disposeModuleScope('orders');
+      await resolver.disposeModuleInstances('orders');
 
       expect(onDispose).toHaveBeenCalledTimes(1);
       expect(instanceDispose).not.toHaveBeenCalled();
@@ -500,7 +500,7 @@ describe('Resolver', () => {
       const resolver = makeResolver(registry);
       resolver.resolve(token, { requester: 'orders' });
 
-      await resolver.disposeModuleScope('orders');
+      await resolver.disposeModuleInstances('orders');
 
       expect(instanceDispose).toHaveBeenCalledTimes(1);
     });
@@ -525,7 +525,7 @@ describe('Resolver', () => {
       resolver.resolve(firstToken, { requester: 'orders' });
       resolver.resolve(secondToken, { requester: 'orders' });
 
-      await resolver.disposeModuleScope('orders');
+      await resolver.disposeModuleInstances('orders');
 
       expect(secondDisposed).toHaveBeenCalledTimes(1);
       expect(onError).toHaveBeenCalledTimes(1);
@@ -539,12 +539,143 @@ describe('Resolver', () => {
       registry.register('orders', [provide(token, { scope: 'module', factory })]);
       const resolver = makeResolver(registry);
       const first = resolver.resolve(token, { requester: 'orders' });
-      await resolver.disposeModuleScope('orders');
+      await resolver.disposeModuleInstances('orders');
 
       const second = resolver.resolve(token, { requester: 'orders' });
 
       expect(second).not.toBe(first);
       expect(factory).toHaveBeenCalledTimes(2);
+    });
+
+    it('H4/#34: disposeModuleInstances disposes the singletons owned by that module, and the next resolution constructs exactly one fresh instance', async () => {
+      // The #34 reproduction at the container level. A module-owned
+      // `singleton` lives for its owning module's activation: deactivation
+      // disposes it, re-resolution builds one new instance — not a second
+      // live one alongside an undisposed first.
+      const registry = makeRegistry();
+      const token = createToken<PaymentGateway>('payments/PaymentGateway');
+      const disposed: number[] = [];
+      let built = 0;
+      registry.register('payments', [
+        provide(token, {
+          scope: 'singleton',
+          factory: (): PaymentGateway => {
+            built += 1;
+            return { charge: async () => {} };
+          },
+          onDispose: () => {
+            disposed.push(built);
+          },
+        }),
+      ]);
+      const resolver = makeResolver(registry);
+
+      const first = resolver.resolve(token, { requester: 'orders' });
+      await resolver.disposeModuleInstances('payments');
+
+      expect(disposed).toEqual([1]);
+
+      const second = resolver.resolve(token, { requester: 'orders' });
+      expect(second).not.toBe(first);
+      expect(built).toBe(2);
+    });
+
+    it('H4/#34: a module-owned singleton is disposed even when a *different* module resolved it (provenance, C9)', async () => {
+      const registry = makeRegistry();
+      const token = createToken<Http>('http/Http');
+      const onDispose = vi.fn();
+      registry.register('http', [
+        provide(token, { scope: 'singleton', factory: (): Http => ({ get: async () => ({}) }), onDispose }),
+      ]);
+      const resolver = makeResolver(registry);
+      // Resolved on behalf of 'orders'; owned by 'http'. Ownership decides.
+      resolver.resolve(token, { requester: 'orders' });
+
+      await resolver.disposeModuleInstances('orders');
+      expect(onDispose).not.toHaveBeenCalled();
+
+      await resolver.disposeModuleInstances('http');
+      expect(onDispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('H4/#34: a module’s singleton and module-scoped instances are disposed in ONE reverse construction order', async () => {
+      const registry = makeRegistry();
+      const order: string[] = [];
+      const singletonToken = createToken<Repo>('orders/Repo');
+      const moduleToken = createToken<Logger>('orders/Logger');
+      const secondSingleton = createToken<AnalyticsSink>('orders/AnalyticsSink');
+      registry.register('orders', [
+        provide(singletonToken, {
+          scope: 'singleton',
+          factory: (): Repo => ({ find: () => undefined }),
+          onDispose: () => void order.push('repo (singleton, built 1st)'),
+        }),
+        provide(moduleToken, {
+          scope: 'module',
+          factory: (): Logger => ({ log: () => {} }),
+          onDispose: () => void order.push('logger (module, built 2nd)'),
+        }),
+        provide(secondSingleton, {
+          scope: 'singleton',
+          factory: (): AnalyticsSink => ({ track: () => {} }),
+          onDispose: () => void order.push('analytics (singleton, built 3rd)'),
+        }),
+      ]);
+      const resolver = makeResolver(registry);
+      resolver.resolve(singletonToken, { requester: 'orders' });
+      resolver.resolve(moduleToken, { requester: 'orders' });
+      resolver.resolve(secondSingleton, { requester: 'orders' });
+
+      await resolver.disposeModuleInstances('orders');
+
+      // Interleaved, not "all module-scoped then all singletons": the two
+      // caches are merged back into the single order they were built in.
+      expect(order).toEqual([
+        'analytics (singleton, built 3rd)',
+        'logger (module, built 2nd)',
+        'repo (singleton, built 1st)',
+      ]);
+    });
+
+    it('#34: a container teardown after a module deactivation disposes the survivors once each, in reverse order, and never revisits the deactivated module’s instance', async () => {
+      const registry = makeRegistry();
+      const order: string[] = [];
+      const goneToken = createToken<PaymentGateway>('payments/PaymentGateway');
+      const firstSurvivor = createToken<Repo>('orders/Repo');
+      const secondSurvivor = createToken<Http>('http/Http');
+      registry.register('payments', [
+        provide(goneToken, {
+          scope: 'singleton',
+          factory: (): PaymentGateway => ({ charge: async () => {} }),
+          onDispose: () => void order.push('payments'),
+        }),
+      ]);
+      registry.register('orders', [
+        provide(firstSurvivor, {
+          scope: 'singleton',
+          factory: (): Repo => ({ find: () => undefined }),
+          onDispose: () => void order.push('orders'),
+        }),
+      ]);
+      registry.register('http', [
+        provide(secondSurvivor, {
+          scope: 'singleton',
+          factory: (): Http => ({ get: async () => ({}) }),
+          onDispose: () => void order.push('http'),
+        }),
+      ]);
+      const resolver = makeResolver(registry);
+      // Construction order: orders, payments, http — so 'payments' is
+      // removed from the *middle* of `singletonOrder`, which is where a
+      // stale order array would show up.
+      resolver.resolve(firstSurvivor, { requester: 'orders' });
+      resolver.resolve(goneToken, { requester: 'orders' });
+      resolver.resolve(secondSurvivor, { requester: 'orders' });
+
+      await resolver.disposeModuleInstances('payments');
+      await resolver.dispose();
+
+      expect(order).toEqual(['payments', 'http', 'orders']);
     });
 
     it('dispose() tears down singletons only, in reverse construction order', async () => {
@@ -598,7 +729,7 @@ describe('Resolver', () => {
       const resolver = makeResolver(registry, { onError, disposeTimeoutMs: 20 });
       resolver.resolve(token, { requester: 'orders' });
 
-      await resolver.disposeModuleScope('orders');
+      await resolver.disposeModuleInstances('orders');
 
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(DisposeTimeoutError);
@@ -625,7 +756,7 @@ describe('Resolver', () => {
       const resolver = makeResolver(registry, { onError, disposeTimeoutMs: 2000 });
       resolver.resolve(token, { requester: 'orders' });
 
-      await resolver.disposeModuleScope('orders');
+      await resolver.disposeModuleInstances('orders');
 
       expect(onError).not.toHaveBeenCalled();
     });

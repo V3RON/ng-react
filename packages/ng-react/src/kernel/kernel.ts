@@ -118,6 +118,17 @@ export interface ProviderInspection {
   readonly scope: Scope;
   readonly owner: string;
   readonly override: boolean;
+  /**
+   * **C6/#37**: present only on a row that an `override: true` registration
+   * superseded, naming the overriding module. Such a row is a record of
+   * what the module registered, never a resolvable provider — the row
+   * *without* this field is the effective one.
+   *
+   * This is what makes an override's effect visible: a test can assert that
+   * its mock displaced a real provider rather than silently mocking a token
+   * no module provides.
+   */
+  readonly overriddenBy?: string;
 }
 
 /** One contribution's position in its C5 collection (G3). */
@@ -636,6 +647,10 @@ export class KernelImpl implements Kernel {
         scope: row.scope,
         owner: row.owner,
         override: row.override,
+        // C6/#37: omitted, not `undefined`, on an effective row — a
+        // consumer's `JSON.stringify` and a test's `toEqual` both read
+        // "absent" as "this provider is live".
+        ...(row.overriddenBy === undefined ? {} : { overriddenBy: row.overriddenBy }),
       }),
     );
 
@@ -709,7 +724,7 @@ export class KernelImpl implements Kernel {
    * repeating it.
    *
    * The order below is load-bearing, and step 3 before step 4 especially:
-   * `Container.disposeModuleScope` and `Container.withdraw` are separate
+   * `Container.disposeModuleInstances` and `Container.withdraw` are separate
    * primitives and **neither calls the other** (a deliberate call in task
    * 2.2 — the container does not decide lifecycle ordering; the kernel
    * does).
@@ -717,9 +732,9 @@ export class KernelImpl implements Kernel {
    * **Why that order, precisely.** Not because withdrawing first leaks the
    * instances: it does not, and the earlier claim that it did (issue #16's
    * first sequencing note) was disproved on the merged container in #32.
-   * `Resolver` keys its module-scoped cache by owner and each cached entry
-   * carries its own `record`, so `disposeModuleScope` never consults the
-   * registry and an earlier `withdraw` cannot starve it. The real reason is
+   * `Resolver` keys its caches by owner and each cached entry carries its
+   * own `record`, so `disposeModuleInstances` never consults the registry
+   * and an earlier `withdraw` cannot starve it. The real reason is
    * **C5's visible-state rule**: `withdraw` notifies contribution
    * subscribers, and withdrawing first notifies them while this module's
    * instances are still live — a subscriber would observe a collection that
@@ -728,7 +743,9 @@ export class KernelImpl implements Kernel {
    *
    *  1. `ctx` cleanups, in reverse registration order (L3)
    *  2. the optional `dispose(ctx)` handler, awaited under ADR-1's timeout
-   *  3. `container.disposeModuleScope` — module-scoped instances (C7)
+   *  3. `container.disposeModuleInstances` — every instance this module
+   *     owns, `module`-scoped **and** `singleton` (C7 + **H4**; see #34 and
+   *     the method's own comment for the lifetime rule)
    *  4. `container.withdraw` — providers and contributions, which notifies
    *     the reactive collections (C5)
    *  5. the `ctx` is marked dead (L4)
@@ -782,7 +799,7 @@ export class KernelImpl implements Kernel {
     }
 
     // 3 before 4 — see `disposeModule`'s doc comment.
-    await this.container.disposeModuleScope(moduleId);
+    await this.container.disposeModuleInstances(moduleId);
     this.container.withdraw(moduleId);
 
     // 5. `withdraw` is what makes re-activation possible at all: the

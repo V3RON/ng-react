@@ -38,6 +38,19 @@ export interface ProviderSnapshotEntry {
   readonly scope: Scope;
   readonly owner: string;
   readonly override: boolean;
+  /**
+   * **C6**: set only on a row that is *not* the effective provider for its
+   * token — a plain `provide` that an `override: true` registration
+   * superseded (in either registration order). The value is the module id
+   * of the override that displaced it, recorded at the moment of
+   * displacement.
+   *
+   * A row without this field is live: it is either the token's effective
+   * provider or a contribution. This is what lets a test assert that its
+   * mock displaced something real rather than silently mocking a token no
+   * module provides.
+   */
+  readonly overriddenBy?: string;
 }
 
 /** One row of `inspect()`'s per-module table — see `RegistrySnapshot`. */
@@ -77,7 +90,21 @@ function describeValue(value: unknown): string {
 /** A single planned action from pass 1 of `register()` — see the comment there. */
 type PlannedAction =
   | { readonly kind: 'provide'; readonly token: AnyToken; readonly entry: RegisteredProvider }
-  | { readonly kind: 'contribute'; readonly token: AnyToken; readonly entry: RegisteredProvider };
+  | { readonly kind: 'contribute'; readonly token: AnyToken; readonly entry: RegisteredProvider }
+  | {
+      // C6/#37: a plain `provide` that an `override: true` registration
+      // already holds the slot for. Recorded, never effective, never fatal.
+      readonly kind: 'superseded';
+      readonly token: AnyToken;
+      readonly entry: RegisteredProvider;
+      readonly overriddenBy: string;
+    };
+
+/** One plain `provide` an override displaced — the backing store for `overriddenBy`. */
+interface SupersededProvider {
+  readonly entry: RegisteredProvider;
+  readonly overriddenBy: string;
+}
 
 /**
  * Shared, frozen "no contributions" sentinel. Returned by `getContributions`
@@ -108,6 +135,22 @@ export class ProviderRegistry {
    * `getContributions`, is safe to cache and compare by identity.
    */
   private readonly contributions = new Map<AnyToken, readonly RegisteredProvider[]>();
+  /**
+   * **C6/#37**: plain `provide` registrations that an `override: true`
+   * registration superseded, keyed by token. Purely diagnostic — nothing
+   * here is ever resolvable, `getProvider`/`hasToken`/`ownerOf` never
+   * consult it — and it exists so `inspect()` can show that an override
+   * displaced a real provider (`overriddenBy`) instead of the displacement
+   * being invisible.
+   *
+   * A superseded entry is dropped when **its own owner** withdraws, not
+   * when the winning override does: it is a record of what that module
+   * registered, and the module is still registered. A withdrawn override
+   * therefore does *not* promote the superseded record back into the
+   * provider slot — provider resurrection has no basis in the spec, and the
+   * pre-existing plain-then-override order never did it either.
+   */
+  private readonly superseded = new Map<AnyToken, SupersededProvider[]>();
   /** Every token (provided or contributed) a module currently owns — drives `withdraw` and `inspect`. */
   private readonly moduleTokens = new Map<string, Set<AnyToken>>();
   /**
@@ -137,8 +180,10 @@ export class ProviderRegistry {
    * @throws {InvalidDescriptorError} for a malformed `moduleId` or `records`.
    * @throws {DuplicateRegistrationError} if `moduleId` is already registered
    *   (call `withdraw(moduleId)` first — e.g. before an HMR re-activation).
-   * @throws {DuplicateProviderError} (C6) for a second unconditional
-   *   `provide()` of a token some module already provides.
+   * @throws {DuplicateProviderError} (C6) for a second plain `provide()` of
+   *   a token another plain `provide()` already holds. A plain `provide()`
+   *   for a token an `override: true` registration holds is **not** an
+   *   error (#37): it is recorded as superseded and ignored.
    * @throws {ProviderKindConflictError} (C5) for a `provide()`/`contribute()`
    *   of a token the registry already holds under the other kind.
    */
@@ -193,14 +238,35 @@ export class ProviderRegistry {
         // order-independent: a registration with `override: true` always
         // replaces whatever is there (nothing to reject — there's nothing
         // for `override: true` to conflict with, by definition); a
-        // registration *without* `override: true` only succeeds when the
-        // slot is empty. This makes the outcome independent of registration
-        // order: whichever provide() call ever set `override: true` for a
-        // token stays the effective provider — either because it replaced
-        // an earlier plain provider, or because a later plain provider that
-        // tried to replace it is rejected here.
+        // registration *without* `override: true` succeeds when the slot is
+        // empty, and is **superseded** (recorded, ignored, not fatal) when
+        // the slot is held by an override. This makes the outcome
+        // independent of registration order: whichever provide() call ever
+        // set `override: true` for a token stays the effective provider —
+        // either because it replaced an earlier plain provider, or because
+        // a later plain provider yields to it here.
+        //
+        // **#37**: the loser used to throw `DuplicateProviderError`, which
+        // — providers being registered during activation — failed and
+        // quarantined the very module the override was mocking *for*
+        // (F3, R4 acceptance criterion 7). C6's actual requirement is
+        // untouched: two *plain* provides for one token are still a fatal
+        // error naming both modules, because neither of them has declared
+        // the intent that `override: true` is. Only the plain-loses-to-
+        // override case changed, from fatal to ignored, and it is
+        // symmetric with the plain-then-override order, which was never
+        // fatal.
         if (existingProvider !== undefined && !record.override) {
-          throw new DuplicateProviderError(record.token.label, existingProvider.owner, moduleId);
+          if (!existingProvider.record.override) {
+            throw new DuplicateProviderError(record.token.label, existingProvider.owner, moduleId);
+          }
+          plan.push({
+            kind: 'superseded',
+            token,
+            entry: Object.freeze({ record, owner: moduleId }),
+            overriddenBy: existingProvider.owner,
+          });
+          continue;
         }
         const entry: RegisteredProvider = Object.freeze({ record, owner: moduleId });
         batchProviders.set(token, entry);
@@ -242,7 +308,16 @@ export class ProviderRegistry {
     const ownedTokens = new Set<AnyToken>();
     for (const action of plan) {
       if (action.kind === 'provide') {
+        // C6/#37: an override taking a slot a plain provider held records
+        // the displaced entry, so both registration orders leave the same
+        // observable state — effective provider plus a superseded row.
+        const displaced = this.providers.get(action.token);
+        if (displaced !== undefined) {
+          this.addSuperseded(action.token, { entry: displaced, overriddenBy: action.entry.owner });
+        }
         this.providers.set(action.token, action.entry);
+      } else if (action.kind === 'superseded') {
+        this.addSuperseded(action.token, { entry: action.entry, overriddenBy: action.overriddenBy });
       } else {
         const existing = this.contributions.get(action.token) ?? EMPTY_CONTRIBUTIONS;
         this.contributions.set(action.token, Object.freeze([...existing, action.entry]));
@@ -276,6 +351,18 @@ export class ProviderRegistry {
         this.providers.delete(token);
       }
 
+      // C6/#37: drop this module's superseded rows — the diagnostic
+      // outlives the displacement, not the module.
+      const displaced = this.superseded.get(token);
+      if (displaced !== undefined) {
+        const remaining = displaced.filter((row) => row.entry.owner !== moduleId);
+        if (remaining.length > 0) {
+          this.superseded.set(token, remaining);
+        } else {
+          this.superseded.delete(token);
+        }
+      }
+
       const contributors = this.contributions.get(token);
       if (contributors !== undefined) {
         // `.filter` on a `readonly` array already returns a brand-new
@@ -295,6 +382,16 @@ export class ProviderRegistry {
     this.moduleTokens.delete(moduleId);
     this.registeredModules.delete(moduleId);
     return tokens;
+  }
+
+  /** Appends one superseded row (C6/#37) — see the `superseded` field. */
+  private addSuperseded(token: AnyToken, row: SupersededProvider): void {
+    const existing = this.superseded.get(token);
+    if (existing === undefined) {
+      this.superseded.set(token, [row]);
+    } else {
+      existing.push(row);
+    }
   }
 
   /**
@@ -397,6 +494,21 @@ export class ProviderRegistry {
         override: provided.record.override,
       });
     }
+    // C6/#37: superseded plain provides, each naming the override that
+    // displaced it. Never resolvable; visible so a test can prove the
+    // override displaced a real provider.
+    for (const displaced of this.superseded.values()) {
+      for (const row of displaced) {
+        providerRows.push({
+          tokenLabel: row.entry.record.token.label,
+          kind: 'provide',
+          scope: row.entry.record.scope,
+          owner: row.entry.owner,
+          override: row.entry.record.override,
+          overriddenBy: row.overriddenBy,
+        });
+      }
+    }
     for (const contributors of this.contributions.values()) {
       for (const contributed of contributors) {
         providerRows.push({
@@ -408,7 +520,14 @@ export class ProviderRegistry {
         });
       }
     }
-    providerRows.sort((a, b) => a.tokenLabel.localeCompare(b.tokenLabel) || a.owner.localeCompare(b.owner));
+    providerRows.sort(
+      (a, b) =>
+        a.tokenLabel.localeCompare(b.tokenLabel) ||
+        a.owner.localeCompare(b.owner) ||
+        // Effective rows before superseded ones, so a token with both is
+        // still deterministically ordered.
+        Number(a.overriddenBy !== undefined) - Number(b.overriddenBy !== undefined),
+    );
 
     const moduleRows: ModuleSnapshotEntry[] = [];
     for (const [moduleId, tokens] of this.moduleTokens) {

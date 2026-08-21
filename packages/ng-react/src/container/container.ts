@@ -72,7 +72,7 @@ export class Container {
    * Delegates to `ProviderRegistry.withdraw` (F3 quarantine, A4 disposal),
    * then notifies C5 subscribers of the affected tokens (task 2.3).
    *
-   * Still deliberately does **not** cascade into `disposeModuleScope` —
+   * Still deliberately does **not** cascade into `disposeModuleInstances` —
    * registration and resolution lifetimes are separate concerns here, and
    * the kernel (which knows the right ordering relative to `dispose`/`init`,
    * A4/H2) decides when each runs. That is also what makes C5's "instances
@@ -80,11 +80,11 @@ export class Container {
    * cascade: the caller sequences
    *
    * ```ts
-   * await container.disposeModuleScope(id); // C7 — module-scoped instances
-   * container.withdraw(id);                 // registry mutation + C5 notify
+   * await container.disposeModuleInstances(id); // C7/H4 — this module's instances
+   * container.withdraw(id);                     // registry mutation + C5 notify
    * ```
    *
-   * `withdraw` is synchronous and `disposeModuleScope` is `async`, so the
+   * `withdraw` is synchronous and `disposeModuleInstances` is `async`, so the
    * ordering cannot be folded in here without making `withdraw` async —
    * a lifecycle decision stage 3 (#15/#16) owns, not this task.
    *
@@ -156,12 +156,19 @@ export class Container {
     return this.collections.subscribeAll(token, callback);
   }
 
-  /** Delegates to `Resolver.disposeModuleScope` (C7). */
-  disposeModuleScope(moduleId: string): Promise<void> {
-    return this.resolver.disposeModuleScope(moduleId);
+  /**
+   * Delegates to `Resolver.disposeModuleInstances` (C7, **H4**) — every
+   * instance owned by `moduleId`, `module`-scoped and `singleton` alike.
+   * See that method for the lifetime rule this pins down (#34).
+   */
+  disposeModuleInstances(moduleId: string): Promise<void> {
+    return this.resolver.disposeModuleInstances(moduleId);
   }
 
-  /** Delegates to `Resolver.dispose` (C7) — container teardown, singletons only. */
+  /**
+   * Delegates to `Resolver.dispose` (C7) — container teardown, the
+   * singletons of modules that were never deactivated.
+   */
   dispose(): Promise<void> {
     return this.resolver.dispose();
   }
