@@ -406,6 +406,39 @@ export class ModuleDisposeTimeoutError extends KernelError {
 }
 
 /**
+ * **ADR-3 branch 4 / H3**: `persistent: true` state could not be carried
+ * across an HMR re-activation of its owning module.
+ *
+ * Reported through the error sinks (F4), **never thrown**: ADR-3 is explicit
+ * that "a failed transfer must not break the HMR cycle". The freshly
+ * constructed instance is left exactly as its factory built it, so the app
+ * keeps running with a reset store rather than a half-restored one.
+ *
+ * Deliberately **not** exported from `index.ts`. It is a diagnostic a sink
+ * renders, not a type a consumer branches on — and the branch that would be
+ * written (`instanceof`) is already available as
+ * `error.code === 'HMR_PERSISTENT_TRANSFER_FAILED'` through the public
+ * `KernelError` base. See the PR body.
+ */
+export class PersistentTransferError extends KernelError {
+  /** The token whose persistent instance could not be transferred. */
+  readonly tokenLabel: string;
+
+  constructor(moduleId: string, tokenLabel: string, reason: string, cause?: unknown) {
+    super(
+      'HMR_PERSISTENT_TRANSFER_FAILED',
+      `Persistent state for '${tokenLabel}' (owned by '${moduleId}') could not be carried across the HMR ` +
+        `re-activation: ${reason}. The freshly constructed instance keeps its initial state and nothing was ` +
+        `thrown. Give the provider a transfer(oldInstance, newInstance) hook, or a snapshot()/restore() pair ` +
+        `whose snapshot is structured-cloneable (ADR-3).`,
+      { moduleId, cause },
+    );
+    this.name = 'PersistentTransferError';
+    this.tokenLabel = tokenLabel;
+  }
+}
+
+/**
  * L2: `ctx.on(emitter, event, handler)` was handed something that is not
  * subscribe-shaped in any of the four supported ways.
  *

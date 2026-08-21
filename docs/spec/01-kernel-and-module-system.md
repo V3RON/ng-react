@@ -333,6 +333,39 @@ Discrepancies found in this document and how they were resolved:
   `packages/ng-react/src/spec-examples.test.ts`. See ADR-10.
 - **§11 Metro `module.hot`** — abstracted behind an `HmrAdapter` interface so the kernel
   stays bundler-agnostic and React Native ready. See ADR-5.
+- **§11 H2 — who calls `HmrAdapter.accept`.** H2 says "the kernel registers Metro HMR
+  acceptance for descriptor, lifecycle, and provider chunks". The kernel **cannot**: a
+  module id (`payments`) is not a bundler chunk id, only a module's own files know their
+  specifiers, and only the re-evaluated `module.ts` holds the new descriptor. **Resolved:**
+  `accept` is called from the module's own hot-update block (stage 7's generator emits it)
+  and calls `kernel.hotReplace(ref, nextDescriptor)`; the kernel holds the adapter and uses
+  it for `invalidate` — telling the bundler to escalate when an update could not be applied
+  in place. `KernelOptions.hmr` defaults to the noop adapter, so a production kernel never
+  asks a bundler for anything. See issue #19.
+- **§11 H2 — a replacement descriptor that fails graph re-validation.** G1/G2 validation
+  runs **before** anything is disposed, and a failing replacement is rejected *whole*: the
+  old descriptor and old graph stay in force, nothing is torn down, the module keeps
+  running the code it was running, and the error goes to the error sinks (F4) and to
+  `hmr.invalidate`. `hotReplace` still resolves. The alternative — dispose first, discover
+  the cycle, leave the module `disposed` — leaves the app dead until a manual reload,
+  because the *fixing* edit then arrives for an inactive module, which H2 refreshes
+  registration-only. The accepted cost is that while a bad edit is in force the running
+  code and the source on disk disagree. See issue #19.
+- **§11 H2/H4 — the descriptor swap lands between disposal and re-activation.**
+  `teardown` calls `descriptor.dispose(ctx)`, and §8 makes a `dispose` handler the mirror
+  of a *completed* `init`. Committing the replacement before disposal would run the new
+  code's teardown against the old code's context. See issue #19.
+- **§11 H3/H4 — how "preserve on HMR, discard on deactivate" is threaded.** Since #34 both
+  paths run the same disposal code, so the distinction cannot be inferred from the call
+  site. `Container.disposeModuleInstances(id, { preservePersistent })` carries it
+  explicitly, and only `hotReplace` passes `true`. A preserved instance is **not disposed
+  at all** — disposing a store is how a store throws its state away — so a persistent
+  instance's listeners outlive one HMR generation, which the H7 leak invariant (task 6.2)
+  has to account for. See issue #19.
+- **§11 H6 — the epoch is bumped even when re-activation fails.** A component holding an
+  instance of a module that failed to come back is holding a disposed object either way;
+  re-rendering surfaces that as a C8 error it can render, rather than as silently stale
+  state. See issue #19.
 - **§7.2 C7 vs §11 H4 — the lifetime of a module-owned `singleton`.** C7 says a `singleton`
   instance is disposed at "app/kernel teardown", which reads as *never* on module disposal.
   H4 says that on re-activation "every provider instance it registered is disposed and

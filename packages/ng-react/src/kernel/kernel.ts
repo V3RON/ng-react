@@ -37,6 +37,8 @@ import {
   ModuleActivationError,
   ModuleDisposeTimeoutError,
 } from '../errors';
+import { createNoopHmrAdapter } from '../hmr/adapter';
+import type { HmrAdapter } from '../hmr/adapter';
 import { EpochStore } from '../hmr/epoch';
 import type { ModuleRef } from '../module-ref';
 import type { AnyProviderRecord } from '../provider';
@@ -91,6 +93,28 @@ export interface KernelOptions {
    * one that failed to come up.
    */
   readonly onFatal?: (error: unknown) => void;
+  /**
+   * **H2 / ADR-5**: the bundler HMR seam. Defaults to
+   * `createNoopHmrAdapter()`.
+   *
+   * The kernel's *own* use of it is exactly one call — `invalidate`, when a
+   * hot update could not be applied in place (see `hotReplace`). It
+   * deliberately does **not** loop over registered modules calling
+   * `accept`, and that is the one place this implementation departs from a
+   * literal reading of H2 ("the kernel registers Metro HMR acceptance for
+   * descriptor, lifecycle, and provider chunks"):
+   *
+   * A kernel module id (`payments`) is not a bundler chunk id. Only the
+   * module's own files know their specifiers, and only the re-evaluated
+   * `module.ts` holds the *new* descriptor — which is why `hotReplace` takes
+   * one. So `accept` is called from the module's own hot-update block
+   * (stage 7's generator emits it) and calls
+   * `kernel.hotReplace(ref, nextDescriptor)`. A kernel-side loop could only
+   * ever call `accept` with strings its adapter cannot resolve, and would
+   * have to re-run the *old* thunks, which is the one thing an HMR cycle
+   * must not do.
+   */
+  readonly hmr?: HmrAdapter;
 }
 
 /** One row of `inspect()`'s module table (G3). */
@@ -269,6 +293,47 @@ export interface Kernel {
    */
   deactivate(ref: ModuleRef): Promise<void>;
   /**
+   * **H2**: applies a hot update to `ref`'s module.
+   *
+   * Called from the module's own hot-update handler, through an
+   * `HmrAdapter` (ADR-5 — no file in this package but `hmr/adapter.ts` may
+   * name a bundler's hot API, and `adapter.test.ts` machine-checks that),
+   * with the re-evaluated descriptor when the descriptor file changed:
+   *
+   * ```ts
+   * hmr.accept('./module', () => { void kernel.hotReplace(OrdersRef, freshOrdersModule()); });
+   * ```
+   *
+   * **On an `active` (`ready`) module**, in H2's order: dispose the module
+   * and every active `dependsOn` dependent (reverse topological order, so
+   * dependents die first), re-evaluate the thunks by re-activating in
+   * topological order, and bump each re-activated module's resolution epoch
+   * (**H6**) so mounted components re-resolve. Provider instances are
+   * disposed **regardless of scope**, `singleton` included (**H4**), with
+   * `persistent: true` stores the sole exception — their state is carried
+   * onto the replacement instance (**H3**, ADR-3). `kernel.deactivate`
+   * discards that state; this does not.
+   *
+   * **On a `registered`, `disposed` or `failed` module**, only the
+   * registration is refreshed: the descriptor is swapped and the graph
+   * re-validated, and nothing is activated. Spec §6 is unambiguous that
+   * editing a file is not an activation trigger.
+   *
+   * **When the replacement's `dependsOn` fails graph re-validation (G1/G2)**
+   * the update is *rejected whole*: the old descriptor stays in force, the
+   * module keeps running the code it was running, the error goes to the
+   * error sinks (F4) and to `hmr.invalidate` — and this promise still
+   * resolves, because a bad edit must not crash the HMR cycle. See the
+   * implementation for why validation deliberately runs before any disposal.
+   *
+   * Calls for one module are **serialised**, not single-flighted: two edits
+   * in flight are two updates and the later descriptor must not be dropped.
+   *
+   * The cascade here is by declared `dependsOn`. **H5** (task 6.2) narrows it
+   * to modules that actually resolved something from the edited one.
+   */
+  hotReplace(ref: ModuleRef, nextDescriptor?: ModuleDescriptor): Promise<void>;
+  /**
    * **F3**: re-attempts activation of a quarantined (`failed`) module from
    * a clean slate — fresh context, fresh registration, fresh
    * module-scoped instances.
@@ -280,6 +345,28 @@ export interface Kernel {
    * answer while the dependency is still broken.
    */
   retry(ref: ModuleRef): Promise<void>;
+}
+
+/** Options accepted by `KernelImpl.disposeModule`. */
+interface DisposeOptions {
+  /**
+   * **H3/ADR-3/H4**: hold `persistent: true` instances back instead of
+   * disposing them, so the replacement instances can adopt their state.
+   * Passed by `hotReplace` and by nothing else — H3 is explicit that a real
+   * deactivation discards persistent state.
+   */
+  readonly preservePersistent?: boolean;
+}
+
+/**
+ * **H2**: a replacement descriptor that has passed G1/G2, waiting to be
+ * committed. `graph` is present only when `dependsOn` actually changed — an
+ * unchanged dependency set produces an identical graph, and rebuilding it
+ * would churn every topological index for nothing.
+ */
+interface ValidatedReplacement {
+  readonly descriptor: ModuleDescriptor;
+  readonly graph?: ModuleGraph;
 }
 
 /** One live `subscribeStatus` registration — same shape, and the same reasons, as `collections.ts`'s. */
@@ -320,7 +407,14 @@ export class KernelImpl implements Kernel {
    */
   private readonly epochStore = new EpochStore();
 
-  private readonly graph: ModuleGraph;
+  /**
+   * **H2**: no longer `readonly`. A `hotReplace` whose replacement
+   * descriptor changed `dependsOn` rebuilds this, and only ever assigns a
+   * graph that already passed G2 and G1 — see `hotReplace`. Everything that
+   * reads it (`getTopologicalIndex`, `getDependsOn`, the cascades) reads
+   * `this.graph` at call time, so no collaborator can hold a stale one.
+   */
+  private graph: ModuleGraph;
   private readonly descriptors = new Map<string, ModuleDescriptor>();
   private readonly statuses = new Map<string, ModuleStatus>();
   private readonly statusSubscriptions = new Map<string, Set<StatusSubscription>>();
@@ -350,6 +444,19 @@ export class KernelImpl implements Kernel {
    * activation's promise, and vice versa.
    */
   private readonly deactivations = new Map<string, Promise<void>>();
+  /**
+   * **H2**: the tail of the serialised `hotReplace` chain per module id.
+   *
+   * A *chain*, not single-flight like `activations`/`deactivations`. Two
+   * concurrent `deactivate` calls mean one thing and can share one promise;
+   * two concurrent `hotReplace` calls are two different edits, and joining
+   * the second onto the first would silently drop the newer descriptor —
+   * leaving the app running code the developer already replaced, which is
+   * the one failure mode HMR must not have.
+   */
+  private readonly hotReplacements = new Map<string, Promise<void>>();
+  /** **ADR-5**: the bundler seam. Never `undefined` — see `KernelOptions.hmr`. */
+  private readonly hmr: HmrAdapter;
   /** **F4**: the one route from a kernel-handled error to the error sinks. */
   private readonly errorRouter: ErrorRouter;
   /** F2: see `KernelOptions.onFatal`. */
@@ -369,6 +476,8 @@ export class KernelImpl implements Kernel {
     this.disposeTimeoutMs = options.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS;
     this.dev = options.dev ?? DEV_BY_DEFAULT;
     this.onFatal = options.onFatal;
+    // ADR-5: the kernel holds an adapter, never a bundler API.
+    this.hmr = options.hmr ?? createNoopHmrAdapter();
     // F4: constructed before the container, because the container's own
     // error reporting is wired straight into it below. Both callbacks read
     // `this` lazily, so neither depends on construction order.
@@ -409,12 +518,7 @@ export class KernelImpl implements Kernel {
     }
 
     // §6 steps 2-4 — build the graph, validate it (G2), sort it (G1).
-    this.graph = buildModuleGraph(
-      [...this.descriptors.values()].map((descriptor) => ({
-        id: descriptor.id.id,
-        dependsOn: descriptor.dependsOn.map((ref) => ref.id),
-      })),
-    );
+    this.graph = buildGraphOf(this.descriptors.values());
 
     // §6 step 5 — every module is `registered` (A2). Set directly rather
     // than through `setStatus`: nobody can hold a subscription yet, since
@@ -450,13 +554,7 @@ export class KernelImpl implements Kernel {
     // registered is already fatal above — but it is computed as the union
     // anyway so the C8 suggestion cannot quietly narrow if that ever
     // changes.
-    const known = new Set<string>(this.descriptors.keys());
-    for (const descriptor of this.descriptors.values()) {
-      for (const ref of descriptor.dependsOn) {
-        known.add(ref.id);
-      }
-    }
-    this.container.setKnownModules([...known].sort());
+    this.refreshKnownModules();
 
     // A3 hook point. Captured out of the executor, which runs synchronously.
     let resolveStartup!: () => void;
@@ -754,12 +852,15 @@ export class KernelImpl implements Kernel {
    * A no-op for a module that has nothing to tear down (`registered`, or
    * already `disposed`).
    */
-  async disposeModule(moduleId: string): Promise<void> {
+  async disposeModule(moduleId: string, options: DisposeOptions = {}): Promise<void> {
     const status = this.statuses.get(moduleId);
     if (!this.descriptors.has(moduleId) || status === undefined || status === 'registered' || status === 'disposed') {
       return;
     }
-    await this.teardown(moduleId, { callDisposeHandler: true });
+    await this.teardown(moduleId, {
+      callDisposeHandler: true,
+      preservePersistent: options.preservePersistent ?? false,
+    });
     this.failures.delete(moduleId);
     this.setStatus(moduleId, 'disposed');
   }
@@ -782,7 +883,10 @@ export class KernelImpl implements Kernel {
    * state it was never written for. The cleanups `init` did register still
    * run (step 1), which is what actually prevents the leak F3 calls out.
    */
-  private async teardown(moduleId: string, options: { readonly callDisposeHandler: boolean }): Promise<void> {
+  private async teardown(
+    moduleId: string,
+    options: { readonly callDisposeHandler: boolean; readonly preservePersistent?: boolean },
+  ): Promise<void> {
     const descriptor = this.descriptors.get(moduleId);
     const ctx = this.contexts.get(moduleId);
 
@@ -798,8 +902,13 @@ export class KernelImpl implements Kernel {
       await this.runDisposeHandler(moduleId, descriptor.dispose, ctx);
     }
 
-    // 3 before 4 — see `disposeModule`'s doc comment.
-    await this.container.disposeModuleInstances(moduleId);
+    // 3 before 4 — see `disposeModule`'s doc comment. **H3/ADR-3**: only an
+    // HMR re-activation passes `preservePersistent`; every other caller of
+    // this method (A4 deactivation, F3 quarantine) leaves it `false`, which
+    // is what makes "hotReplace preserves, deactivate discards" true.
+    await this.container.disposeModuleInstances(moduleId, {
+      preservePersistent: options.preservePersistent ?? false,
+    });
     this.container.withdraw(moduleId);
 
     // 5. `withdraw` is what makes re-activation possible at all: the
@@ -875,6 +984,204 @@ export class KernelImpl implements Kernel {
       }
     } finally {
       this.deactivations.delete(moduleId);
+    }
+  }
+
+  /**
+   * **H2**: see the `Kernel` interface for the contract.
+   *
+   * Serialised per module through `hotReplacements` rather than
+   * single-flighted — two edits are two updates, and the second one's
+   * descriptor is the one the developer is looking at.
+   */
+  hotReplace(ref: ModuleRef, nextDescriptor?: ModuleDescriptor): Promise<void> {
+    let moduleId: string;
+    try {
+      moduleId = this.requireRegistered(ref, 'hotReplace');
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const previous = this.hotReplacements.get(moduleId) ?? Promise.resolve();
+    // `.catch` before `.then`: a failed update must not wedge the chain, or
+    // one bad edit would stop every later edit of that module from applying.
+    const chained = previous.catch(() => {}).then(() => this.runHotReplace(moduleId, nextDescriptor));
+    this.hotReplacements.set(moduleId, chained);
+    const release = (): void => {
+      if (this.hotReplacements.get(moduleId) === chained) {
+        this.hotReplacements.delete(moduleId);
+      }
+    };
+    chained.then(release, release);
+    return chained;
+  }
+
+  /**
+   * One hot update, in H2's order.
+   *
+   * **Validation runs before anything is disposed, and that ordering is the
+   * whole design.** A replacement descriptor whose `dependsOn` introduces a
+   * cycle (G1) or names an unregistered module (G2) is rejected *whole*: the
+   * old descriptor stays in force, the old graph stays in force, nothing is
+   * disposed, and the module keeps running the code it was already running.
+   * The error goes to the sinks (F4) and to `hmr.invalidate`, and this
+   * method still resolves — the issue is explicit that a graph error must be
+   * surfaced "rather than crashing the HMR cycle".
+   *
+   * The alternative — dispose first, discover the cycle, leave the module
+   * `disposed` — fails the only test that matters for a dev tool: a
+   * developer who typo'd a `dependsOn` should be able to fix the file, get
+   * the next HMR update, and have a working app again. Under this ordering
+   * they do, and their app never even flickered. Under the alternative the
+   * broken edit tears the module down and the *fixing* edit then arrives for
+   * an inactive module, which H2 says to refresh-registration-only — so the
+   * app would stay dead until a manual reload.
+   *
+   * The cost, stated plainly: while a bad edit is in force the running code
+   * and the source on disk disagree. That is strictly better than the app
+   * being down, and the sink message says exactly which module was skipped.
+   */
+  private async runHotReplace(moduleId: string, nextDescriptor?: ModuleDescriptor): Promise<void> {
+    let replacement: ValidatedReplacement | undefined;
+    if (nextDescriptor !== undefined) {
+      replacement = this.validateReplacement(moduleId, nextDescriptor);
+      if (replacement === undefined) {
+        return;
+      }
+    }
+
+    // A2/A4: never tear down mid-activation — same reasoning, and the same
+    // swallow, as `runDeactivation`.
+    await this.activations.get(moduleId)?.catch(() => {});
+
+    // **H2**: "On update of a `registered`-but-inactive module, only the
+    // registration is refreshed." `disposed` and `failed` take the same
+    // branch: editing a file is not an activation trigger (spec §6), and a
+    // `failed` module's way back is `retry`, which is a decision its owner
+    // makes, not the bundler's.
+    const active = this.statuses.get(moduleId) === 'ready';
+
+    // The cascade, by declared `dependsOn` (H5 narrows this in task 6.2).
+    // `[moduleId, ...dependentsOf(transitive)]` is already topological, so
+    // it is the re-activation order and its reverse is the disposal order —
+    // exactly `runDeactivation`'s pairing, and for the same reason.
+    //
+    // Read off the graph that is still in force, deliberately: a module has
+    // to be torn down along the edges it was *brought up* along.
+    const cascade = active
+      ? [moduleId, ...this.graph.dependentsOf(moduleId, { transitive: true })].filter(
+          (id) => this.statuses.get(id) === 'ready',
+        )
+      : [];
+
+    // 1 — dispose, dependents first. **H4**: every provider instance,
+    // `singleton` included. **H3**: except `persistent: true`, whose state
+    // is parked for the replacement instance to adopt.
+    for (const id of [...cascade].reverse()) {
+      await this.disposeModule(id, { preservePersistent: true });
+    }
+
+    // 2 — the descriptor swap lands **between** disposal and re-activation,
+    // and that position is load-bearing rather than incidental: `teardown`
+    // calls `descriptor.dispose(ctx)`, and the `dispose` that must run is
+    // the one paired with the `init` that actually ran (spec §8 — a
+    // `dispose` handler mirrors a *completed* `init`). Committing the
+    // replacement first would run the *new* code's teardown against the old
+    // code's context, which is the same category of bug L4's dead context
+    // exists to catch.
+    if (replacement !== undefined) {
+      this.commitReplacement(moduleId, replacement);
+    }
+    if (!active) {
+      return;
+    }
+
+    // 3 + 4 — re-evaluate the thunks by re-activating, in topological order.
+    //
+    // Honest note on what this loop order does and does not buy: a dependent
+    // could not re-activate before what it depends on even if this iterated
+    // backwards, because `activateById` recurses through `activateDependencies`
+    // first (A1). What the order *does* determine is the sequence of **H6**
+    // epoch bumps below — a consumer of two modules in this cascade sees them
+    // invalidated dependency-first — and that is what `hot-replace.test.ts`
+    // pins.
+    for (const id of cascade) {
+      try {
+        await this.activateById(id);
+      } catch {
+        // F1/F3 already retained, quarantined and reported this. Rethrowing
+        // would abort the rest of the cascade and leave modules that could
+        // still come back `disposed`.
+        this.hmr.invalidate?.(id, 'module could not be re-activated after a hot update');
+      }
+      // **H6**: bumped whether or not re-activation succeeded. A component
+      // holding an instance of a module that failed to come back is holding
+      // a disposed object either way; re-rendering surfaces that as a C8
+      // error it can render, instead of as silently stale state.
+      this.bumpEpoch(id);
+    }
+  }
+
+  /**
+   * Checks that `next` may replace `moduleId`'s descriptor, re-validating
+   * the graph when `dependsOn` changed. Returns `undefined` when the update
+   * was rejected (G1/G2) — nothing is mutated on any path through this
+   * method, which is what lets `runHotReplace` reject a bad edit *before*
+   * anything has been torn down.
+   *
+   * @throws {InvalidDescriptorError} when `next` describes a different
+   *   module. That is a caller bug, not a developer's bad edit — a
+   *   hot-update handler wired to the wrong ref — and swallowing it into
+   *   the sinks would let a module be silently replaced by another one's
+   *   code.
+   */
+  private validateReplacement(moduleId: string, next: ModuleDescriptor): ValidatedReplacement | undefined {
+    if (next === null || typeof next !== 'object' || typeof next.id?.id !== 'string') {
+      throw new InvalidDescriptorError(
+        `kernel.hotReplace(): the replacement for module '${moduleId}' is not a descriptor created via ` +
+          `defineModule().`,
+        moduleId,
+      );
+    }
+    if (next.id.id !== moduleId) {
+      throw new InvalidDescriptorError(
+        `kernel.hotReplace(): the replacement descriptor for module '${moduleId}' has id '${next.id.id}'. ` +
+          `A hot update may replace a module's implementation, never its identity.`,
+        moduleId,
+      );
+    }
+
+    const current = this.descriptors.get(moduleId);
+    const before = current?.dependsOn.map((ref) => ref.id) ?? [];
+    const after = next.dependsOn.map((ref) => ref.id);
+    // Set-compared, not array-compared: `dependsOn` order is not observable
+    // anywhere (the graph sorts it), so a reordered list is not a change and
+    // must not force a graph rebuild.
+    if (sameIdSet(before, after)) {
+      return { descriptor: next };
+    }
+
+    // G1/G2 on a *candidate* built from a copy — nothing on `this` is
+    // touched until it is known to be valid.
+    const candidates = new Map(this.descriptors);
+    candidates.set(moduleId, next);
+    try {
+      return { descriptor: next, graph: buildGraphOf(candidates.values()) };
+    } catch (error) {
+      this.report(error, moduleId, 'activate');
+      this.hmr.invalidate?.(
+        moduleId,
+        'the replacement descriptor failed graph validation; the previous descriptor is still in force',
+      );
+      return undefined;
+    }
+  }
+
+  /** Applies an already-validated replacement. Cannot fail. */
+  private commitReplacement(moduleId: string, replacement: ValidatedReplacement): void {
+    this.descriptors.set(moduleId, replacement.descriptor);
+    if (replacement.graph !== undefined) {
+      this.graph = replacement.graph;
+      this.refreshKnownModules();
     }
   }
 
@@ -1282,6 +1589,22 @@ export class KernelImpl implements Kernel {
     return Number.isFinite(index) ? index : Number.MAX_SAFE_INTEGER;
   }
 
+  /**
+   * C8: the full universe of module ids the container may name in a
+   * suggestion. Re-run by `hotReplace` when a replacement descriptor changes
+   * `dependsOn`, so the suggestion never quietly describes a graph the
+   * kernel no longer has.
+   */
+  private refreshKnownModules(): void {
+    const known = new Set<string>(this.descriptors.keys());
+    for (const descriptor of this.descriptors.values()) {
+      for (const ref of descriptor.dependsOn) {
+        known.add(ref.id);
+      }
+    }
+    this.container.setKnownModules([...known].sort());
+  }
+
   /** Resolves `ref` to a registered module id, or throws naming the calling API. */
   private requireRegistered(ref: ModuleRef, api: string): string {
     if (ref === null || typeof ref !== 'object' || typeof ref.id !== 'string') {
@@ -1296,6 +1619,33 @@ export class KernelImpl implements Kernel {
     }
     return ref.id;
   }
+}
+
+/**
+ * §6 steps 2-4 over a set of descriptors: G2 validation, G1 cycle detection,
+ * topological sort.
+ *
+ * A free function rather than a method because `hotReplace` builds a
+ * **candidate** graph from descriptors the kernel has not committed to yet —
+ * it must be possible to build one and throw it away without any of it
+ * having touched `this`.
+ *
+ * @throws {UnknownModuleError} G2. @throws {DependencyCycleError} G1.
+ */
+function buildGraphOf(descriptors: Iterable<ModuleDescriptor>): ModuleGraph {
+  return buildModuleGraph(
+    [...descriptors].map((descriptor) => ({
+      id: descriptor.id.id,
+      dependsOn: descriptor.dependsOn.map((ref) => ref.id),
+    })),
+  );
+}
+
+/** Whether two `dependsOn` id lists describe the same dependency set. */
+function sameIdSet(a: readonly string[], b: readonly string[]): boolean {
+  const left = new Set(a);
+  const right = new Set(b);
+  return left.size === right.size && [...left].every((id) => right.has(id));
 }
 
 /** F1/G3: renders a retained failure for `inspect()`, keeping the result JSON-safe. */

@@ -258,6 +258,23 @@ export function createTestKernel(options: TestKernelOptions): TestKernel {
     },
     whenStartupComplete: () => kernel.whenStartupComplete(),
     deactivate: (ref) => kernel.deactivate(ref),
+    // **H2**: nothing is *recorded* here — a hot update's effects are
+    // already fully observable through `status`, `epochOf`, `inspect()` and
+    // `errors`, so there is no harness-only state to add (the same argument
+    // as the epoch members above).
+    //
+    // The replacement descriptor is wrapped, though, and must be: every
+    // module under test gains a `dependsOn` edge to the harness module and
+    // has its thunks instrumented, and a raw replacement would silently drop
+    // both — taking the leak counters (H7) and the guarantee that the
+    // overrides are registered first (A1) with it.
+    hotReplace: (ref, nextDescriptor) =>
+      kernel.hotReplace(
+        ref,
+        nextDescriptor === undefined
+          ? undefined
+          : wrapDescriptor(nextDescriptor, { harnessRef, counters, recorder, dev }),
+      ),
     retry: (ref) => kernel.retry(ref),
     dispose: async () => {
       // A4: the harness module is a dependency of every module under test,

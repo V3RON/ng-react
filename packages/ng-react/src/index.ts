@@ -65,6 +65,16 @@ export { defineModule } from './define-module';
 export type { Kernel, KernelOptions } from './kernel/kernel';
 export { createKernel } from './kernel/kernel';
 
+// hmr/ — the HMR seam (H2, H3, ADR-3, ADR-5). `createViteHmrAdapter` takes
+// the host's hot context; no file in this package reads one (ADR-5).
+// `EpochStore` and `transferPersistentState` stay internal — the kernel
+// re-exposes the former as `epochOf`/`bumpEpoch`/`subscribeEpoch` and drives
+// the latter from the container.
+export type { HmrAdapter, ViteHotContext } from './hmr/adapter';
+export { createViteHmrAdapter, createNoopHmrAdapter } from './hmr/adapter';
+export type { Store } from './hmr/persistent';
+export { defineStore } from './hmr/persistent';
+
 // kernel/failure.ts — the failure policy (F1-F4). Only the token is public:
 // `ErrorSink`/`ErrorInfo` are types above, and the router that delivers to
 // the sinks is the kernel's business, not a consumer's.
