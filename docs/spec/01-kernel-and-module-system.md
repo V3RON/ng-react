@@ -457,3 +457,31 @@ Discrepancies found in this document and how they were resolved:
   `@ng-react/eslint-config-modules`, per ADR-8 (`@app/*` is the scope for *application* module
   packages, and a shared lint preset is not one). Cosmetic, recorded rather than fixed in the
   spec text. See PR #44.
+- **§15 criterion 1 — the logout cascade it describes cannot happen on the graph it
+  specifies.** The criterion asks for `deactivate(AuthModule)` to cascade "disposal of
+  `orders` and `payments` dependents in reverse order", but the same criterion gives
+  `payments` no dependency on `auth` (`orders` dependsOn `auth` and `payments`). A4 cascades
+  to *dependents*, and `payments` is a dependency of `orders`, not a dependent of `auth`, so
+  it stays `ready` after logout. **Resolved:** the demo asserts what actually happens
+  (`orders` then `auth`, as an order and not as membership) and disposes `payments` through
+  its own `deactivate`; the criterion's wording is wrong, not the implementation. Giving
+  `payments` a dependency it does not need would have made the criterion look discharged
+  while teaching the wrong model. See issue #23 and PR #45.
+- **§3 M2 — "the import graph of contracts mirrors the module graph by construction" is not
+  true once C5 contributions exist.** A contributing module imports the collection token from
+  the declaring module's contract and correctly declares **no** `dependsOn` edge to it: a
+  contribution is precisely the relationship that does not create one (that is what makes C5
+  useful). In the demo, `payments` and `debug` both import `@app/auth/contract` for
+  `DiagnosticPanelToken` with empty `dependsOn`. M2 holds for *dependency refs* — a typo is
+  still a compile error and "find all references" still works — but the contract import graph
+  is a **superset** of the module graph, not a mirror. Recorded rather than fixed; the same
+  fact is why §15 criterion 1's cascade reads wrong. See PR #45.
+- **§11 H2 — a hot block routed through an injected context is invisible to Vite.** Vite
+  decides self-acceptance by lexically scanning source for `import.meta.hot.accept`, so the
+  generated block's `hot.accept(cb)` — where `hot` is a parameter defaulted to
+  `import.meta.hot`, which is what made it testable — never registers: every edit to a module
+  file becomes a full page reload and `hotReplace` is never called. Measured with a real dev
+  server (`page reload` for the shipped block; `hmr update` after adding a literal accept).
+  Consequence: the accept call **must appear literally in the module's own source**, which
+  settles issue #42 — no adapter indirection can satisfy a static scan. Open as issue #46;
+  acceptance criteria 3 and 4 are not discharged at the demo level until it is fixed.
