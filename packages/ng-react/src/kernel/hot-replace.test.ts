@@ -1,7 +1,7 @@
 // **H2 / H3 / H4 / H6 / G1 / G2** — `kernel.hotReplace`.
 //
 // `.test.ts` → the **kernel** project (node): no bundler, no renderer. Every
-// "HMR update" below is a direct `hotReplace` call or a fake `HmrAdapter`
+// "HMR update" below is a direct `hotReplace` call or a fake bundler host
 // firing its own callback, which is exactly what ADR-5's abstraction is for.
 // The H6 component half lives in `src/react/hot-replace.test.tsx`.
 
@@ -320,8 +320,6 @@ describe('kernel.hotReplace — graph re-validation (G1, G2)', () => {
     return {
       enabled: true,
       invalidations,
-      accept: () => {},
-      dispose: () => {},
       invalidate: (id, reason) => {
         invalidations.push(reason === undefined ? id : `${id}: ${reason}`);
       },
@@ -785,7 +783,7 @@ describe('kernel.hotReplace — H6 epochs', () => {
         },
       });
 
-    const hmr = { enabled: true, accept: () => {}, dispose: () => {}, invalidate: vi.fn() };
+    const hmr = { enabled: true, invalidate: vi.fn() };
     const kernel = createKernel({ modules: [sinkModule(reports), authModule, build()], hmr });
     await settled(kernel);
     await kernel.activate(paymentsRef);
@@ -802,25 +800,25 @@ describe('kernel.hotReplace — H6 epochs', () => {
   });
 });
 
-describe('kernel.hotReplace — driven through a fake HmrAdapter (ADR-5)', () => {
-  it('H2: an update fired through the adapter drives the whole re-activation', async () => {
+describe('kernel.hotReplace — driven through a fake bundler host (ADR-5, §17)', () => {
+  it('H2: an update fired by the host drives the whole re-activation', async () => {
     const trace: Trace = [];
-    // The fake bundler. This is what a host's `hmr.accept('./providers', …)`
-    // wiring looks like — the kernel never sees the bundler at all.
+    // The fake bundler, and note what it is *not*: an `HmrAdapter`. Since #42
+    // the seam has no `accept` — `accept` is called by the module's own hot
+    // block against `import.meta.hot` directly, because Vite's self-accept
+    // detection is a lexical scan of that module's source (#46). So this is
+    // the shape of a *generated module's* hot context, which is where the
+    // kernel's `hotReplace` is really called from.
     const handlers = new Map<string, () => void>();
-    const hmr: HmrAdapter = {
-      enabled: true,
-      accept: (id, onUpdate) => handlers.set(id, onUpdate),
-      dispose: () => {},
-    };
+    const host = { accept: (id: string, onUpdate: () => void) => handlers.set(id, onUpdate) };
 
-    const kernel = createKernel({ modules: [authModule, paymentsModule({ generation: 1, trace })], hmr });
+    const kernel = createKernel({ modules: [authModule, paymentsModule({ generation: 1, trace })] });
     await settled(kernel);
     await kernel.activate(paymentsRef);
     expect(kernel.get(PaymentGatewayToken).generation).toBe(1);
 
     let pending: Promise<void> = Promise.resolve();
-    hmr.accept('payments/providers.ts', () => {
+    host.accept('payments/providers.ts', () => {
       pending = kernel.hotReplace(paymentsRef, paymentsModule({ generation: 2, trace }));
     });
 

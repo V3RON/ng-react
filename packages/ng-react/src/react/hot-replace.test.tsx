@@ -7,9 +7,10 @@
 // `.test.tsx` → the **kernel-dom** project (jsdom + the React plugin), and
 // everything renders under `<StrictMode>` like the rest of `src/react/`.
 //
-// The HMR update is driven through a **fake `HmrAdapter`** — a plain object
-// literal (ADR-5). There is no Vite, no Metro and no bundler anywhere in
-// this path, and `import.meta.hot` is never touched.
+// The HMR update is driven through a **fake bundler host** — a plain object
+// literal standing in for a generated module's hot context (ADR-5, §17).
+// There is no Vite, no Metro and no bundler anywhere in this path, and
+// `import.meta.hot` is never touched.
 
 import { StrictMode, useRef } from 'react';
 import type { ReactNode } from 'react';
@@ -20,7 +21,6 @@ import { AppKernel } from './context';
 import { useService } from './hooks';
 import { defineModule } from '../define-module';
 import type { ModuleDescriptor } from '../define-module';
-import type { HmrAdapter } from '../hmr/adapter';
 import { defineStore } from '../hmr/persistent';
 import type { Store } from '../hmr/persistent';
 import { createKernel } from '../kernel/kernel';
@@ -86,16 +86,15 @@ function Tree(props: { kernel: Kernel; children: ReactNode }): ReactNode {
 describe('H6: a mounted component picks up the fresh instance after a hot update', () => {
   it('H6/H4 (acceptance criterion 4): the old instance is disposed and the component re-renders holding the new one, with no remount', async () => {
     const disposed: number[] = [];
-    // The fake bundler seam. `accept` stores the handler; firing it is what
-    // "the developer saved payments/providers.ts" means in this test.
+    // The fake bundler seam — a generated module's hot context, not an
+    // `HmrAdapter`: since #42 the adapter has no `accept`, because Vite only
+    // honours an `import.meta.hot.accept` written literally in the module's
+    // own source (#46). `accept` stores the handler; firing it is what "the
+    // developer saved payments/providers.ts" means in this test.
     const handlers = new Map<string, () => void>();
-    const hmr: HmrAdapter = {
-      enabled: true,
-      accept: (id, onUpdate) => handlers.set(id, onUpdate),
-      dispose: () => {},
-    };
+    const host = { accept: (id: string, onUpdate: () => void) => handlers.set(id, onUpdate) };
 
-    const kernel = createKernel({ modules: [paymentsModule(1, disposed)], hmr, onFatal: () => {} });
+    const kernel = createKernel({ modules: [paymentsModule(1, disposed)], onFatal: () => {} });
     await kernel.whenStartupComplete();
     // `payments` is eager but non-critical, so `whenStartupComplete` does not
     // wait for it (A3). Await the activation the test depends on explicitly.
@@ -133,10 +132,10 @@ describe('H6: a mounted component picks up the fresh instance after a hot update
     const rendersBefore = seen.length;
     const mountsBefore = mountCounts.length;
 
-    // The whole HMR cycle, through the adapter. Nothing here is a kernel
+    // The whole HMR cycle, through the host. Nothing here is a kernel
     // internal and nothing here is a bundler.
     let pending: Promise<void> = Promise.resolve();
-    hmr.accept('payments/providers.ts', () => {
+    host.accept('payments/providers.ts', () => {
       pending = kernel.hotReplace(paymentsRef, paymentsModule(2, disposed));
     });
     await act(async () => {
