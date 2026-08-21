@@ -1,0 +1,17 @@
+{
+  "name": "@app/auth",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./contract": "./src/contract.ts",
+    "./module": "./src/module.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit --pretty"
+  },
+  "dependencies": {
+    "@ng-react/kernel": "workspace:*"
+  }
+}
