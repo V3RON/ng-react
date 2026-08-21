@@ -1,63 +1,44 @@
 # ng-react
 
-Angular 2+ guarantees for React and React Native — module boundaries, explicit dependency
-injection, and a deterministic module lifecycle — without decorators, `reflect-metadata`,
-or hierarchical injectors.
+**ng-react brings Angular-style modules and dependency injection to React and React Native.**
 
-- `packages/ng-react` — `@ng-react/kernel`, the framework.
-- `apps/react` — Vite + React 19 demo and acceptance app.
-- `docs/spec/01-kernel-and-module-system.md` — the normative spec.
-- [AGENTS.md](AGENTS.md) — ground truth for contributors: toolchain, conventions, ADRs.
-- [HANDOFF.md](HANDOFF.md) — current status, decisions made, and known traps.
+React gives you components, but nothing to organize the code *behind* them: services get
+wired together by hand, singletons leak across the app, and there's no clean way to load a
+feature only when it's needed. ng-react fills that gap. You describe your app as
+**modules** with explicit dependencies, register **providers** for the things they expose,
+and let a small **kernel** activate them in the right order — lazily, where declared. Modules
+can depend on each other but never reach into each other's internals, so boundaries stay
+real as the app grows. Every provider is resolved through a typed **token** instead of a
+concrete import, so swapping an implementation — for tests, for a feature flag, for a
+platform variant — never means editing the consumer. It's fast to hot-reload, easy to test
+without a renderer, and has zero decorators or reflection to fight with your bundler.
+
+## Getting started
+
+Install the kernel package:
 
 ```bash
-pnpm install
-pnpm verify   # typecheck + lint + test
-pnpm --filter @ng-react/demo-react dev
+npm install @ng-react/kernel
 ```
 
-Work is tracked as GitHub issues: **stages** are issues, **tasks** are sub-issues, and
-each task lands as one squash-merged PR.
+Wrap your app in the kernel provider:
 
----
+```tsx
+import { AppKernel } from '@ng-react/kernel';
 
-## What works today
+export function App() {
+  return (
+    <AppKernel modules={[ordersModule, authModule]}>
+      <YourApp />
+    </AppKernel>
+  );
+}
+```
 
-Stages 1–8 are merged: the kernel, the boundary lint preset, the module generator, a
-four-module demo app, and a proof-of-concept navigation module built on public primitives
-only. `docs/acceptance.md` maps every one of spec 01 §15's ten acceptance criteria to the
-test that proves it — and marks the two that are only partially covered, with the reason.
-
-- **Modules** — `defineModule` descriptors with seven fields, typed `dependsOn` refs, and
-  `eager` / `lazy` load strategies. Nothing in a module's implementation is evaluated before
-  its activation trigger.
-- **DI** — three flat scopes (`singleton`, `module`, `transient`), no injector tree,
-  explicit token arrays, kernel-assigned provenance, and multi-provider `contribute`
-  collections that are reactive.
-- **Lifecycle** — `init` and `dispose` only; `ctx.on` / `ctx.effect` make teardown structural.
-  `deactivate` cascades to dependents in reverse topological order.
-- **Failure policy** — critical failures fail startup visibly; non-critical ones are
-  quarantined with their providers withdrawn, and every error is routed to contributed
-  `ErrorSinkToken` sinks.
-- **HMR** — editing a module's lifecycle, providers or services re-activates only the
-  modules that actually consumed something from it, carries `persistent: true` store state
-  across, and re-renders mounted components against the fresh instances. No page reload.
-- **React** — `<AppKernel>`, `useService`, `useServiceOptional`, `useServiceAll`, `useModule`.
-- **Testing** — `createTestKernel` runs in a plain Node environment with no React renderer,
-  with provider overrides and listener/effect leak counters.
-- **Boundaries** — package `exports` maps plus `@ng-react/eslint-config-modules`, which
-  rejects cross-module deep imports, non-allowlisted contract exports, `override: true`
-  inside a module package, and dependency cycles.
-
-Not yet: the event bus, slots, platform services, and the real navigation module (specs
-02–06). `packages/nav` is a proof of concept for criterion 10, not spec 03.
-
-## Usage
-
-Define a module's contract — types, tokens, and exactly one module ref, and nothing else:
+Define a module — its public contract, what it provides, and how it's wired up:
 
 ```ts
-// @app/orders — src/contract.ts
+// contract.ts — the module's public surface
 import { createToken, moduleRef } from '@ng-react/kernel';
 
 export const OrdersModule = moduleRef('orders');
@@ -65,47 +46,37 @@ export interface OrderService { place(amountMinor: number): Promise<string> }
 export const OrderServiceToken = createToken<OrderService>('orders/OrderService');
 ```
 
-Provide the service, declaring its dependencies as tokens (no reflection, ever):
-
 ```ts
-// @app/orders — src/providers.ts
-import { provide, MODULE_ID } from '@ng-react/kernel';
-import { PaymentGatewayToken } from '@app/payments/contract';
+// providers.ts — how the service is built, and what it needs
+import { provide } from '@ng-react/kernel';
 import { OrderServiceToken } from './contract';
 
 export const providers = [
   provide(OrderServiceToken, {
     scope: 'singleton',
-    deps: [PaymentGatewayToken, MODULE_ID],
-    factory: (gateway, requester) => createOrderService(gateway, requester),
+    deps: [PaymentGatewayToken],
+    factory: (gateway) => createOrderService(gateway),
   }),
 ];
 ```
 
-Describe the module to the kernel — statically, with thunks, so `lazy` means something:
-
 ```ts
-// @app/orders — src/module.ts
+// module.ts — ties the contract and providers together for the kernel
 import { defineModule } from '@ng-react/kernel';
-import { AuthModule } from '@app/auth/contract';
 import { OrdersModule } from './contract';
 
-export const module = defineModule({
+export const ordersModule = defineModule({
   id: OrdersModule,
-  dependsOn: [AuthModule],
   load: 'lazy',
-  critical: false,
   providers: () => import('./providers').then((m) => m.providers),
-  init: (ctx) => import('./lifecycle').then((m) => m.init(ctx)),
 });
 ```
 
-Consume it from a component. `useService` returns the same instance across renders, and
-re-resolves by itself when the owning module is hot-replaced:
+Then use it from a component — no prop drilling, no manual wiring:
 
 ```tsx
 import { useService } from '@ng-react/kernel';
-import { OrderServiceToken } from '@app/orders/contract';
+import { OrderServiceToken } from './contract';
 
 export function PlaceOrderButton() {
   const orders = useService(OrderServiceToken);
@@ -113,5 +84,13 @@ export function PlaceOrderButton() {
 }
 ```
 
-`pnpm create-module <id>` emits all of the above, plus a `createTestKernel` test and the
-HMR hot block.
+## The building blocks
+
+- **Module** — a self-contained unit of your app (a feature, a domain), with its own
+  providers and lifecycle. Modules declare what they depend on and load eagerly or lazily.
+- **Token** — a typed identifier for something a module provides. Consumers ask for a
+  token, never a concrete class or file, so implementations can be swapped freely.
+- **Provider** — the recipe for building the thing behind a token: its scope
+  (`singleton`, `module`, or `transient`) and its own dependencies, also expressed as tokens.
+- **Kernel** — the runtime that activates modules in dependency order, resolves tokens,
+  and tears everything down cleanly when a module deactivates.
