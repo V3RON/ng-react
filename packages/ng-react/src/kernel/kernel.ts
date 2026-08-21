@@ -37,6 +37,7 @@ import {
   ModuleActivationError,
   ModuleDisposeTimeoutError,
 } from '../errors';
+import { EpochStore } from '../hmr/epoch';
 import type { ModuleRef } from '../module-ref';
 import type { AnyProviderRecord } from '../provider';
 import type { Token } from '../token';
@@ -157,10 +158,68 @@ export interface Kernel {
    * does **not** fire on subscribe — see `KernelImpl.subscribeStatus`.
    */
   subscribeStatus(ref: ModuleRef, callback: (status: ModuleStatus) => void): Unsubscribe;
-  /** Resolves `token` from outside any module — requester `'app'` (ADR-2). */
-  get<T>(token: Token<T>): T;
+  /**
+   * Resolves `token`. `requester` is C4's resolution context — the module
+   * on whose behalf the chain is started, which is what `MODULE_ID`
+   * resolves to inside every factory in it. Defaults to ADR-2's reserved
+   * `'app'`, so `kernel.get(token)` keeps meaning "from outside any
+   * module"; **R2** passes the id of the module owning the enclosing screen
+   * (`useModuleScope`).
+   *
+   * An optional second parameter rather than a second method: `get(token)`
+   * is exactly `get(token, 'app')`, and two names for one resolution would
+   * be principle 5's "two ways to do the same thing".
+   */
+  get<T>(token: Token<T>, requester?: string): T;
   /** C5: the full contribution collection for `token`, in module topological order. */
   getAll<T>(token: Token<T>): readonly T[];
+  /**
+   * C5: notifies `callback` when `token`'s contribution set changes — a
+   * module registered contributions, or was withdrawn by disposal or F3
+   * quarantine. The read-side companion to `getAll`, and the store
+   * `useServiceAll` (**R3**) is built on.
+   *
+   * Does not fire on subscribe, like `subscribeStatus` (A2). The returned
+   * `Unsubscribe` is idempotent.
+   */
+  subscribeAll<T>(token: Token<T>, callback: (values: readonly T[]) => void): Unsubscribe;
+  /**
+   * **C9**: the module that `provide`d `token`, or `undefined` when nothing
+   * provides it.
+   *
+   * `undefined` for a *contribution* token too, and that is not an
+   * oversight: a contribution collection has many owners, so there is no
+   * single answer (see `ProviderRegistry.ownerOf`). Consumers of a
+   * collection use `subscribeAll`, which already tracks every owner.
+   *
+   * Exposed for **H6**: `useService` needs the owning module to know whose
+   * resolution epoch to watch. It is also exactly the predicate
+   * `optional(token)` uses (§7.3 — "no provider" is checked against the
+   * registry before anything is constructed), which is what makes
+   * `useServiceOptional` agree with `deps: [optional(token)]`.
+   */
+  ownerOf<T>(token: Token<T>): string | undefined;
+  /**
+   * **H6**: the current resolution epoch of `moduleId` — or the global
+   * epoch (the total number of bumps, for a consumer with no single module
+   * to watch) when `moduleId` is omitted.
+   */
+  epochOf(moduleId?: string): number;
+  /**
+   * **H6**: records that everything resolved on behalf of `moduleId` may be
+   * stale, so subscribed components re-render and re-resolve.
+   *
+   * Called by the HMR driver after a module re-activation (stage 6). It is
+   * public because the driver lives outside the kernel by ADR-5, and
+   * because a test must be able to prove the re-resolution path without an
+   * HMR runtime.
+   */
+  bumpEpoch(moduleId: string): void;
+  /**
+   * **H6**: observes `bumpEpoch`. `moduleId` `undefined` observes every
+   * bump. Does not fire on subscribe; the `Unsubscribe` is idempotent.
+   */
+  subscribeEpoch(moduleId: string | undefined, callback: () => void): Unsubscribe;
   /** G3: the resolved graph as a plain, serialisable object. */
   inspect(): KernelInspection;
   /**
@@ -239,6 +298,16 @@ export class KernelImpl implements Kernel {
   readonly disposeTimeoutMs: number;
   /** F2 / diagnostics. Read by tasks 3.2 and 3.3. */
   readonly dev: boolean;
+
+  /**
+   * **H6**: this kernel's resolution epochs (`src/hmr/epoch.ts`).
+   *
+   * Per-kernel, never module-level: two kernels in one test file (R4) must
+   * not be able to invalidate each other's components. Nothing bumps it in
+   * this stage — the HMR driver (stage 6, ADR-5) is the only intended
+   * caller of `bumpEpoch`.
+   */
+  private readonly epochStore = new EpochStore();
 
   private readonly graph: ModuleGraph;
   private readonly descriptors = new Map<string, ModuleDescriptor>();
@@ -474,9 +543,17 @@ export class KernelImpl implements Kernel {
     };
   }
 
-  /** ADR-2: resolutions started outside any module carry the reserved requester `'app'`. */
-  get<T>(token: Token<T>): T {
-    return this.container.resolve(token, { requester: APP_REQUESTER });
+  /**
+   * C4/R2. ADR-2: resolutions started outside any module carry the reserved
+   * requester `'app'`, which is why the default is applied *here* and not in
+   * the resolver — `ResolveOptions.requester` is required precisely so the
+   * resolver can never invent a context of its own.
+   *
+   * A failed resolution throws the container's `ResolutionError` (C8)
+   * untouched; nothing on this path wraps or re-messages it.
+   */
+  get<T>(token: Token<T>, requester: string = APP_REQUESTER): T {
+    return this.container.resolve(token, { requester });
   }
 
   /**
@@ -492,6 +569,31 @@ export class KernelImpl implements Kernel {
    */
   getAll<T>(token: Token<T>): readonly T[] {
     return this.container.getAll(token);
+  }
+
+  /** C5: see `Kernel.subscribeAll`. Pure delegation to the container. */
+  subscribeAll<T>(token: Token<T>, callback: (values: readonly T[]) => void): Unsubscribe {
+    return this.container.subscribeAll(token, callback);
+  }
+
+  /** C9: see `Kernel.ownerOf`. Pure delegation to the container. */
+  ownerOf<T>(token: Token<T>): string | undefined {
+    return this.container.ownerOf(token);
+  }
+
+  /** H6: see `Kernel.epochOf`. */
+  epochOf(moduleId?: string): number {
+    return this.epochStore.epochOf(moduleId);
+  }
+
+  /** H6: see `Kernel.bumpEpoch`. */
+  bumpEpoch(moduleId: string): void {
+    this.epochStore.bump(moduleId);
+  }
+
+  /** H6: see `Kernel.subscribeEpoch`. */
+  subscribeEpoch(moduleId: string | undefined, callback: () => void): Unsubscribe {
+    return this.epochStore.subscribe(moduleId, callback);
   }
 
   /** G3: see `KernelInspection`. */
