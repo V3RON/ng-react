@@ -40,10 +40,14 @@ import {
 import { createNoopHmrAdapter } from '../hmr/adapter';
 import type { HmrAdapter } from '../hmr/adapter';
 import { EpochStore } from '../hmr/epoch';
+import { LeakInvariantCheck } from '../hmr/leak-check';
+import { ResolutionGraph } from '../hmr/resolution-graph';
+import type { ResolutionEdge } from '../hmr/resolution-graph';
 import type { ModuleRef } from '../module-ref';
 import type { AnyProviderRecord } from '../provider';
 import type { Token } from '../token';
 import type { ErrorPhase, LoadStrategy, ModuleStatus, Scope, Unsubscribe } from '../types';
+import type { LeakReport } from '../testing/leak-counters';
 import { ModuleContextImpl } from './context';
 import { ErrorRouter, ErrorSinkToken, raiseFatal } from './failure';
 import { buildModuleGraph } from './graph';
@@ -179,6 +183,21 @@ export interface KernelInspection {
   readonly edges: readonly EdgeInspection[];
   readonly providers: readonly ProviderInspection[];
   readonly contributions: readonly ContributionInspection[];
+  /**
+   * **H5/G3**: the true resolution graph — every `(consumer, owner, token)`
+   * the container actually resolved, sorted by those three fields.
+   *
+   * **Present only when the kernel is in dev mode, and absent otherwise** —
+   * `undefined` would be a claim that the graph exists and is empty. With
+   * `dev: false` no `ResolutionGraph` is constructed and the resolver is
+   * handed no recorder, so there is nothing to report; the key's absence is
+   * the honest rendering of that.
+   *
+   * Distinct from `edges`, which is the *declared* `dependsOn` graph. The
+   * two differ exactly where H5 matters: a module that declares a dependency
+   * it never resolves has an `edges` row and no `resolutionGraph` row.
+   */
+  readonly resolutionGraph?: readonly ResolutionEdge[];
 }
 
 /**
@@ -408,6 +427,24 @@ export class KernelImpl implements Kernel {
   private readonly epochStore = new EpochStore();
 
   /**
+   * **H5**: the dev-only resolution graph, or `undefined` in production.
+   *
+   * The `undefined` is the production gate, and it is structural: with no
+   * graph there is no recorder to hand the resolver, no `resolutionGraph`
+   * key in `inspect()`, and `hotReplace` falls back to A4's declared
+   * `dependsOn` cascade. Nothing anywhere reads this except `inspect()` and
+   * `hotReplace`, which is what keeps H5's "never load-bearing for
+   * correctness" true by construction rather than by discipline.
+   */
+  private readonly resolutionGraph: ResolutionGraph | undefined;
+
+  /**
+   * **H7**: the post-HMR-cycle leak invariant, or `undefined` when nobody
+   * installed leak counters for it to read. See `installLeakCheck`.
+   */
+  private leakCheck: LeakInvariantCheck | undefined;
+
+  /**
    * **H2**: no longer `readonly`. A `hotReplace` whose replacement
    * descriptor changed `dependsOn` rebuilds this, and only ever assigns a
    * graph that already passed G2 and G1 — see `hotReplace`. Everything that
@@ -527,6 +564,11 @@ export class KernelImpl implements Kernel {
       this.statuses.set(id, 'registered');
     }
 
+    // **H5**: dev only. Created before the container because the container
+    // is handed the recorder that writes to it.
+    const resolutionGraph = this.dev ? new ResolutionGraph() : undefined;
+    this.resolutionGraph = resolutionGraph;
+
     this.container = new Container({
       // C5: contribution collections are ordered by the kernel's
       // topological order. Without this the container's documented
@@ -548,6 +590,18 @@ export class KernelImpl implements Kernel {
       onError: (error, info) => {
         this.report(error, info.moduleId ?? APP_REQUESTER, info.phase);
       },
+      // **H5**: spread, not a conditional callback, so that in production
+      // the option is *absent* — the resolver then holds `undefined` and
+      // never allocates an argument list per resolution. `resolutionGraph`
+      // is captured rather than read off `this`, so the closure cannot
+      // observe a `undefined` field it was only created because of.
+      ...(resolutionGraph === undefined
+        ? {}
+        : {
+            recordResolution: (consumer: string, owner: string, token: string): void => {
+              resolutionGraph.record(consumer, owner, token);
+            },
+          }),
     });
     // C8: the full universe of module ids the kernel knows. Given G2 this
     // is exactly the registered set — a `dependsOn` id that is not
@@ -783,6 +837,9 @@ export class KernelImpl implements Kernel {
       edges: Object.freeze(edges),
       providers: Object.freeze(providers),
       contributions: Object.freeze(contributions),
+      // **H5/G3**: omitted, not `undefined`, in production — see
+      // `KernelInspection.resolutionGraph`. Already sorted by the graph.
+      ...(this.resolutionGraph === undefined ? {} : { resolutionGraph: this.resolutionGraph.snapshot() }),
     });
   }
 
@@ -918,6 +975,18 @@ export class KernelImpl implements Kernel {
     ctx?.markDead();
     this.contexts.delete(moduleId);
     this.activations.delete(moduleId);
+
+    // **H5**: the module holds nothing any more, so every edge it was the
+    // *consumer* of is stale and must go — otherwise the graph only ever
+    // grows and the next cascade over-cascades into modules that no longer
+    // consume anything from the edited one. Re-activation re-records
+    // whatever the new code actually resolves.
+    //
+    // Here rather than in `disposeModule` on purpose: this is the one
+    // teardown path all three callers share (A4 deactivation, F3 quarantine
+    // and an HMR cycle's disposal step), so there is exactly one place a
+    // consumer can be forgotten and no way for one of them to skip it.
+    this.resolutionGraph?.forgetConsumer(moduleId);
   }
 
   /**
@@ -1060,18 +1129,17 @@ export class KernelImpl implements Kernel {
     // makes, not the bundler's.
     const active = this.statuses.get(moduleId) === 'ready';
 
-    // The cascade, by declared `dependsOn` (H5 narrows this in task 6.2).
-    // `[moduleId, ...dependentsOf(transitive)]` is already topological, so
-    // it is the re-activation order and its reverse is the disposal order —
-    // exactly `runDeactivation`'s pairing, and for the same reason.
+    // **H5**: the cascade, narrowed to *true consumers* in dev and falling
+    // back to A4's declared `dependsOn` dependents in production. See
+    // `hotCascade`.
     //
-    // Read off the graph that is still in force, deliberately: a module has
-    // to be torn down along the edges it was *brought up* along.
-    const cascade = active
-      ? [moduleId, ...this.graph.dependentsOf(moduleId, { transitive: true })].filter(
-          (id) => this.statuses.get(id) === 'ready',
-        )
-      : [];
+    // Read off the graphs that are still in force, deliberately: a module
+    // has to be torn down along the edges it was *brought up* along.
+    const cascade = active ? this.hotCascade(moduleId) : [];
+
+    // **H7**: the counts as the cycle found them. Cheap and `undefined`
+    // unless something installed leak counters (`installLeakCheck`).
+    const leakBefore = this.leakCheck?.snapshot();
 
     // 1 — dispose, dependents first. **H4**: every provider instance,
     // `singleton` included. **H3**: except `persistent: true`, whose state
@@ -1079,6 +1147,13 @@ export class KernelImpl implements Kernel {
     for (const id of [...cascade].reverse()) {
       await this.disposeModule(id, { preservePersistent: true });
     }
+
+    // **H7**: measured here, between disposal and re-activation, because
+    // this instant is the invariant's whole content — everything the
+    // cascade registered should have been released by now. See
+    // `hmr/leak-check.ts` for the rule and for why the residual, not a
+    // remembered baseline, is what detects accumulation.
+    const leakResidual = this.leakCheck?.snapshot();
 
     // 2 — the descriptor swap lands **between** disposal and re-activation,
     // and that position is load-bearing rather than incidental: `teardown`
@@ -1119,6 +1194,85 @@ export class KernelImpl implements Kernel {
       // error it can render, instead of as silently stale state.
       this.bumpEpoch(id);
     }
+
+    // **H7**: after the cycle, and after the epoch bumps, so the counts
+    // include everything the new `init` registered. `check` never throws
+    // (its body is guarded), so this needs no `try` of its own — a leak
+    // report must not break a hot update.
+    if (this.leakCheck !== undefined && leakBefore !== undefined && leakResidual !== undefined) {
+      this.leakCheck.check({
+        cascade,
+        before: leakBefore,
+        residual: leakResidual,
+        after: this.leakCheck.snapshot(),
+      });
+    }
+  }
+
+  /**
+   * **H5**: which modules one hot update disposes and re-activates.
+   *
+   * In dev this is the *consumer* closure from the resolution graph — the
+   * edited module plus every module that transitively resolved something
+   * from it — instead of every declared `dependsOn` dependent. A module that
+   * lists `payments` in `dependsOn` but never resolves one of its tokens is
+   * therefore left running, which is the entire observable effect of H5.
+   *
+   * In production there is no graph, and the fallback is A4's declared
+   * cascade — byte-for-byte what this method's caller did before H5 existed.
+   * That is what "never load-bearing for correctness" means operationally:
+   * the narrowing can only ever *remove* modules from a set that is already
+   * correct, and removing the wrong one costs a stale instance in a dev
+   * session, never a wrong production teardown. `kernel.deactivate` is
+   * untouched by any of this and keeps cascading by `dependsOn` in dev too
+   * (A4).
+   *
+   * **Ordering is the kernel's, not the graph's.** The consumer closure is a
+   * set; H2 needs topological order (its reverse is the disposal order), so
+   * it is sorted by the module graph's own index here. A true consumer that
+   * did not *declare* the dependency it resolves has no ordering constraint
+   * in that graph and may land anywhere among its peers — the C8 diagnostic
+   * exists to push authors to declare it, and this is one more reason to.
+   */
+  private hotCascade(moduleId: string): readonly string[] {
+    const graph = this.resolutionGraph;
+    const candidates =
+      graph === undefined
+        ? [moduleId, ...this.graph.dependentsOf(moduleId, { transitive: true })]
+        : [...graph.consumerCascade(moduleId)].sort(
+            (a, b) => this.sortIndexOf(a) - this.sortIndexOf(b) || a.localeCompare(b),
+          );
+    // Only `ready` modules take part, exactly as `runDeactivation` filters:
+    // a `registered` module has nothing to tear down and a `failed` one has
+    // already been quarantined (F3).
+    return candidates.filter((id) => this.statuses.get(id) === 'ready');
+  }
+
+  /**
+   * **H7**: installs the post-HMR-cycle leak invariant, reading counts from
+   * `read`.
+   *
+   * On `KernelImpl` rather than in `KernelOptions`, and that placement is
+   * the decision: the counters are *instrumentation*, installed by whoever
+   * wrapped the module descriptors (`createTestKernel` today, spec §12 R4),
+   * and a public kernel option would be an invitation for an application to
+   * hand the kernel a reader with nothing behind it. A no-op when this
+   * kernel is not in dev mode — H7 is a dev-mode check by its own wording,
+   * and a production kernel has no counters to read anyway.
+   */
+  installLeakCheck(read: () => LeakReport): void {
+    if (!this.dev) {
+      return;
+    }
+    this.leakCheck = new LeakInvariantCheck({
+      read,
+      // **F4/C9**: through the kernel's one reporting door, attributed to
+      // the leaking module in the `dispose` phase — the phase whose job it
+      // was to release the registrations that survived.
+      route: (error, moduleId) => {
+        this.report(error, moduleId, 'dispose');
+      },
+    });
   }
 
   /**

@@ -32,7 +32,7 @@ import { defineModule } from '../define-module';
 import type { ModuleDescriptor } from '../define-module';
 import { InvalidDescriptorError } from '../errors';
 import { ErrorSinkToken } from '../kernel/failure';
-import { createKernel } from '../kernel/kernel';
+import { KernelImpl } from '../kernel/kernel';
 import type { Kernel } from '../kernel/kernel';
 import { moduleRef } from '../module-ref';
 import type { ModuleRef } from '../module-ref';
@@ -213,13 +213,23 @@ export function createTestKernel(options: TestKernelOptions): TestKernel {
     wrapDescriptor(descriptor, { harnessRef, counters, recorder, dev }),
   );
 
-  const kernel = createKernel({
+  // `new KernelImpl` rather than `createKernel`, which is the same
+  // constructor with a `Kernel`-typed return. The harness needs the one
+  // member that is on the class and deliberately not on the public
+  // interface: `installLeakCheck` (**H7**). The counters live here — the
+  // instrumentation this file installs is what produces them — so this file
+  // is also the only thing that can hand the kernel a reader for them.
+  const kernel = new KernelImpl({
     modules: [harness, ...wrapped],
     initTimeoutMs: options.initTimeoutMs ?? DEFAULT_TEST_INIT_TIMEOUT_MS,
     disposeTimeoutMs: options.disposeTimeoutMs ?? DEFAULT_TEST_DISPOSE_TIMEOUT_MS,
     dev,
     onFatal: options.onFatal ?? (() => {}),
   });
+  // **H7**: the post-HMR-cycle invariant check. A no-op when `dev` is off —
+  // and with `dev` off nothing is instrumented either, so the reader would
+  // have nothing to read (see `wrapDescriptor`).
+  kernel.installLeakCheck(() => counters.report());
 
   // Started here rather than left to the kernel's scheduled eager pass so
   // that the sink and the overrides are registered before *anything* a test
@@ -405,6 +415,21 @@ function hideHarness(inspection: ReturnType<Kernel['inspect']>): ReturnType<Kern
     ),
     providers: Object.freeze(inspection.providers.filter((row) => row.owner !== HARNESS_MODULE_ID)),
     contributions: Object.freeze(contributions),
+    // **H5/G3**: the harness resolves the error sinks and owns the
+    // `overrides`, so it appears on both ends of real edges. Hidden on both
+    // ends for the same reason its `dependsOn` edges are — a test asserting
+    // on the resolution graph should see its own modules, not the harness.
+    // Spread so that a `dev: false` test kernel keeps the key *absent*
+    // rather than gaining an empty array.
+    ...(inspection.resolutionGraph === undefined
+      ? {}
+      : {
+          resolutionGraph: Object.freeze(
+            inspection.resolutionGraph.filter(
+              (row) => row.consumer !== HARNESS_MODULE_ID && row.owner !== HARNESS_MODULE_ID,
+            ),
+          ),
+        }),
   });
 }
 

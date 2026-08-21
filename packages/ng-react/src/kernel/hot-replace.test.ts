@@ -746,6 +746,13 @@ describe('kernel.hotReplace — H6 epochs', () => {
     });
     await settled(kernel);
     await kernel.activate(ordersRef);
+    // **H5**: `orders` is in the cascade because it *consumed* a `payments`
+    // instance, not because it declares `dependsOn: [payments]`. Without
+    // this resolution its `OrderService` was never constructed (C3), so it
+    // holds nothing the edit invalidates and the H5 cascade — correctly —
+    // leaves it running and its epoch untouched. `resolution-cascade.test.ts`
+    // asserts that case head-on.
+    expect(kernel.get(OrderServiceToken).place('DESK-1')).toBe('DESK-1@gen1:100');
     expect(kernel.epochOf('payments')).toBe(0);
     expect(kernel.epochOf('orders')).toBe(0);
 
