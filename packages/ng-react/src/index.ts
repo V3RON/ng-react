@@ -32,6 +32,11 @@ export {
   CircularDependencyError,
   ProviderFactoryError,
   DisposeTimeoutError,
+  ActivationTimeoutError,
+  ModuleActivationError,
+  DependencyActivationError,
+  ModuleDisposeTimeoutError,
+  UnsupportedEmitterError,
 } from './errors';
 
 // module-ref.ts — module value identities (M1-M3).
