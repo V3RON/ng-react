@@ -66,7 +66,10 @@ export type { Kernel, KernelOptions } from './kernel/kernel';
 export { createKernel } from './kernel/kernel';
 
 // hmr/ — the HMR seam (H2, H3, ADR-3, ADR-5). `createViteHmrAdapter` takes
-// the host's hot context; no file in this package reads one (ADR-5).
+// the host's hot context; no file in this package reads one (ADR-5). Since
+// #42 the seam is `invalidate` only: the `accept` half of HMR belongs to the
+// module's own file, which must name `import.meta.hot.accept` literally for
+// Vite to see it (#46).
 // `EpochStore` and `transferPersistentState` stay internal — the kernel
 // re-exposes the former as `epochOf`/`bumpEpoch`/`subscribeEpoch` and drives
 // the latter from the container.

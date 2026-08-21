@@ -68,10 +68,13 @@ const appModuleRefs: readonly ModuleRef[] = [
  * **Production always returns `undefined`, and that is not a fallback.** Under
  * Vite, `import.meta.hot` in *this* file addresses *this* file: a self-accept
  * registered through it would accept updates to the composition root, not to
- * `@app/auth/module`. Only a module's own file can accept its own updates, so
- * the right production call is `acceptAuthHotUpdate(kernel)` with no context —
- * and passing an explicit `undefined` is identical to omitting the argument,
- * because that is what a default parameter means.
+ * `@app/auth/module`. Only a module's own file can accept its own updates —
+ * and since #46, only a *literal* `import.meta.hot.accept` in that file can,
+ * because Vite's self-accept detection is a lexical scan of the module's own
+ * source. So the right production call is `acceptAuthHotUpdate(kernel)` with
+ * no context: the module resolves its own, which is the dispatcher behind
+ * that literal call. Passing an explicit `undefined` is identical to omitting
+ * the argument.
  *
  * The seam exists so the four calls below are *testable*: without it, deleting
  * one of them would break HMR for that module and no test in the workspace
@@ -124,8 +127,17 @@ export function createAppKernel(
   // **H2 — the obligation the kernel cannot discharge for itself.** Each
   // module exports `acceptHotUpdate(kernel)` alongside its descriptor, and a
   // module may not import the composition root (B1), so the root hands each
-  // one the kernel. Without these four lines the hot blocks are armed
-  // nowhere and every edit falls through to a full page reload.
+  // one the kernel. The module's own file registers the literal self-accept
+  // Vite's scanner requires (#46) at evaluation time; these four lines are
+  // what give that registration a kernel to act on.
+  //
+  // **Forgetting one is now quieter than it was, which is why the test for
+  // it matters more.** Before #46 an unarmed module fell through to a full
+  // page reload — slow, but the app was still correct. Now the module is
+  // self-accepting either way, so a missing line means Vite reports
+  // `hmr update`, nothing calls `hotReplace`, and the running app keeps the
+  // old code with no reload and no error. `App.test.tsx` asserts all four,
+  // by kernel identity and not merely by count.
   //
   // One line per module, and no loop: the pairing of a descriptor with its
   // own accept function is a fact about each package, and a loop over a table

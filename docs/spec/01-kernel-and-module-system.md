@@ -483,5 +483,36 @@ Discrepancies found in this document and how they were resolved:
   file becomes a full page reload and `hotReplace` is never called. Measured with a real dev
   server (`page reload` for the shipped block; `hmr update` after adding a literal accept).
   Consequence: the accept call **must appear literally in the module's own source**, which
-  settles issue #42 — no adapter indirection can satisfy a static scan. Open as issue #46;
-  acceptance criteria 3 and 4 are not discharged at the demo level until it is fixed.
+  settles issue #42 — no adapter indirection can satisfy a static scan.
+  **Resolved:** the generated `module.ts` now carries a literal, top-level
+  `if (import.meta.hot) { import.meta.hot.accept(cb) }`. That runs at module-evaluation
+  time, before the composition root can hand the module a kernel, so what it registers is
+  a **dispatcher** over a module-local list of callbacks; `acceptHotUpdate(kernel)`
+  subscribes into it through `ModuleHotContext` — the same seam a non-Vite host passes in,
+  so there is one mechanism and not two. The list holds callbacks, never a kernel: #41's
+  rejection of an ambient "current kernel" stands, and two kernels in one process subscribe
+  two callbacks that cannot observe each other. The re-arm forwards the `hot` argument it
+  was *given*, not the context it resolved, because Vite clears the previous evaluation's
+  callbacks when the fresh copy registers its own. Measured after the fix on the same demo
+  app: five consecutive edits across `module.ts`, `providers.ts` and `lifecycle.ts` each
+  produced `hmr update` and a `disposed → activating → ready` cycle for the module, with
+  no page reload; twenty further consecutive edits produced twenty more. See issue #46.
+- **§11 H2 / ADR-5 — `HmrAdapter` is the invalidate seam and nothing else.** The interface
+  shipped with four members and the kernel called one. `accept` and `dispose` had no call
+  site, and the evidence above makes `accept` **unusable** rather than merely unused: a
+  static scan cannot see through an adapter, so acceptance can only ever be registered by
+  the module's own source. **Resolved in favour of #42's option 2 (shrink):** `accept` and
+  `dispose` are removed from `HmrAdapter` and from `ViteHotContext`, the generated module's
+  direct `import.meta.hot` access is the documented blessed pattern for both bundlers
+  (`module.hot` on Metro), and ADR-5's remaining claim — *no kernel code may name a
+  bundler's hot API* — is unchanged and still true. The `KernelOptions.hmr` doc snippet
+  that could not be written as shown is replaced by the emitted block itself. See issue #42.
+- **§11 H3/H7 — what the demo app can and cannot discharge of acceptance criteria 3 and 4.**
+  With the fix above, H3 was observed at the demo level: `payments`' `persistent: true`
+  draft store held its state across three consecutive hot replacements (its conditional
+  seed never re-ran). H7's *leak counters* were not observed and cannot be, because
+  `LeakInvariantCheck` is constructed only when something installed counters for it to read
+  — today only `createTestKernel` does, so a browser session of the demo app runs the H7
+  check not at all, and "no leak warnings in the console" is vacuous rather than passing.
+  Discharging criterion 4's leak half at the demo level needs a test-kernel-driven harness
+  or a kernel option; task #24 owns it.

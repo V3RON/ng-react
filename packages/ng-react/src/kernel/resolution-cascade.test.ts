@@ -295,11 +295,9 @@ describe('H5 — the HMR cascade follows the resolution graph', () => {
     const trace: Trace = [];
     const invalidated: string[] = [];
     // ADR-5: a plain fake, not a bundler. `invalidate` is the only member
-    // the kernel calls; the other three exist because the interface has them.
+    // the kernel calls, and since #42 the only one the interface has.
     const hmr: HmrAdapter = {
       enabled: true,
-      accept: () => {},
-      dispose: () => {},
       invalidate: (moduleId, reason) => {
         invalidated.push(`${moduleId}:${String(reason)}`);
       },

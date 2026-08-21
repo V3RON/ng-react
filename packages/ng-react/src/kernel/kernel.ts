@@ -101,22 +101,35 @@ export interface KernelOptions {
    * **H2 / ADR-5**: the bundler HMR seam. Defaults to
    * `createNoopHmrAdapter()`.
    *
-   * The kernel's *own* use of it is exactly one call — `invalidate`, when a
-   * hot update could not be applied in place (see `hotReplace`). It
-   * deliberately does **not** loop over registered modules calling
-   * `accept`, and that is the one place this implementation departs from a
-   * literal reading of H2 ("the kernel registers Metro HMR acceptance for
-   * descriptor, lifecycle, and provider chunks"):
+   * The seam has exactly one operation, `invalidate`, and the kernel makes
+   * exactly one kind of call on it: escalate, when a hot update could not be
+   * applied in place (see `hotReplace`). That is the one place this
+   * implementation departs from a literal reading of H2 ("the kernel
+   * registers Metro HMR acceptance for descriptor, lifecycle, and provider
+   * chunks"):
    *
    * A kernel module id (`payments`) is not a bundler chunk id. Only the
    * module's own files know their specifiers, and only the re-evaluated
    * `module.ts` holds the *new* descriptor — which is why `hotReplace` takes
-   * one. So `accept` is called from the module's own hot-update block
-   * (stage 7's generator emits it) and calls
-   * `kernel.hotReplace(ref, nextDescriptor)`. A kernel-side loop could only
-   * ever call `accept` with strings its adapter cannot resolve, and would
-   * have to re-run the *old* thunks, which is the one thing an HMR cycle
-   * must not do.
+   * one. So acceptance is registered by the module's own hot block, which
+   * `create-module` emits, and which calls
+   * `kernel.hotReplace(ref, nextDescriptor)`:
+   *
+   * ```ts
+   * // in the generated `<pkg>/module.ts`, and the literal matters — Vite
+   * // decides self-acceptance by scanning that file's own source (#46)
+   * if (import.meta.hot) {
+   *   import.meta.hot.accept((next) => { …hotReplace(ref, next.module)… });
+   * }
+   * // and in the composition root, once, because a module may not import it:
+   * acceptHotUpdate(kernel);
+   * ```
+   *
+   * A kernel-side loop could not do this in any form: it could only call a
+   * bundler with strings its adapter cannot resolve, it would have to re-run
+   * the *old* thunks, and — decisively — an accept call it made would be in
+   * *this* file's source, not the module's, so Vite would ignore it. That is
+   * why `HmrAdapter` has no `accept` to loop over (issue #42).
    */
   readonly hmr?: HmrAdapter;
 }
@@ -314,14 +327,30 @@ export interface Kernel {
   /**
    * **H2**: applies a hot update to `ref`'s module.
    *
-   * Called from the module's own hot-update handler, through an
-   * `HmrAdapter` (ADR-5 — no file in this package but `hmr/adapter.ts` may
-   * name a bundler's hot API, and `adapter.test.ts` machine-checks that),
-   * with the re-evaluated descriptor when the descriptor file changed:
+   * Called from the module's **own** hot block — not through `HmrAdapter`,
+   * which has no `accept` (issue #42) — with the re-evaluated descriptor the
+   * bundler hands that block. This is what `create-module` emits into every
+   * `<pkg>/module.ts`, and the snippet is copied from there rather than
+   * paraphrased, because two of its details are load-bearing: the accept call
+   * must be **literal** for Vite's static scan to mark the file
+   * self-accepting (#46), and the new descriptor comes from the *replacement
+   * namespace*, since only the re-evaluated copy of that file holds it.
    *
    * ```ts
-   * hmr.accept('./module', () => { void kernel.hotReplace(OrdersRef, freshOrdersModule()); });
+   * // <pkg>/module.ts — `OrdersModule` is this module's own ref (D2)
+   * if (import.meta.hot) {
+   *   import.meta.hot.accept((next) => {
+   *     const replacement = next as { module?: ModuleDescriptor } | undefined;
+   *     if (replacement?.module === undefined) return;
+   *     void kernel.hotReplace(OrdersModule, replacement.module);
+   *   });
+   * }
    * ```
+   *
+   * The `kernel` in that callback is not ambient: the emitted file exports an
+   * `acceptHotUpdate(kernel)` that the composition root calls once, because a
+   * module may not import the composition root (B1) and the literal block
+   * above runs at module-evaluation time, before any kernel exists.
    *
    * **On an `active` (`ready`) module**, in H2's order: dispose the module
    * and every active `dependsOn` dependent (reverse topological order, so

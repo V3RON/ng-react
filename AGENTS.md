@@ -182,11 +182,18 @@ tags. Package `exports` maps are the primary enforcement (§4 of the spec).
 
 **ADR-5 — HMR is abstracted behind an `HmrAdapter`.** The spec is written against Metro
 (`module.hot`). This repo's demo app is Vite. The kernel therefore depends on a small
-`HmrAdapter` interface (accept/dispose/invalidate), with a `createViteHmrAdapter(hot)`
-implementation shipped and a Metro adapter left as a documented, trivial second
-implementation. **No kernel code may reference `import.meta.hot` or `module.hot`
-directly** — only the adapter may. This keeps the kernel React Native ready without a
-React Native app in the repo.
+`HmrAdapter` interface, with a `createViteHmrAdapter(hot)` implementation shipped and a
+Metro adapter left as a documented, trivial second implementation. **No kernel code may
+reference `import.meta.hot` or `module.hot` directly** — only the adapter may. This keeps
+the kernel React Native ready without a React Native app in the repo.
+
+> **Narrowed by #42/#46 (PR-level amendment, recorded in spec §17).** The interface was
+> `accept`/`dispose`/`invalidate`; it is now **`invalidate` only**. `accept` cannot live
+> behind an adapter at all: Vite decides self-acceptance by lexically scanning a module's
+> own source for `import.meta.hot.accept`, so any indirection makes every edit a full page
+> reload — measured, not inferred. Acceptance is therefore registered by each generated
+> module's own hot block, which names `import.meta.hot` literally; that is **app** code, and
+> the sentence above still binds every file in `packages/ng-react`.
 
 **ADR-6 — The kernel core must not import `react`.** Only `src/react/**` may. Enforced in
 practice by the node-environment test project (§3).

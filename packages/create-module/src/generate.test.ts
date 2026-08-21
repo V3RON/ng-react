@@ -78,13 +78,15 @@ describe('generateModule — B4 golden tree', () => {
     const source = generated.files.find((file) => file.path.endsWith('src/module.ts'))?.contents ?? '';
     expect(source).toContain('export function acceptHotUpdate(');
     expect(source).toContain('void kernel.hotReplace(DemoThingModule, replacement.module);');
-    // The hot context is a defaulted parameter, not an internal read: that is
-    // what makes the emitted `module.test.ts` able to drive the block with an
-    // object literal, and what lets a Metro host supply its own.
-    expect(source).toContain(
-      "hot: ModuleHotContext | undefined = (import.meta as ImportMeta & { hot?: ModuleHotContext }).hot,",
-    );
+    // The hot context is an optional parameter resolved against the module's
+    // own self-accept, not an internal read: that is what makes the emitted
+    // `module.test.ts` able to drive the block with an object literal, and
+    // what lets a Metro host supply its own.
+    expect(source).toContain('export function acceptHotUpdate(kernel: Kernel, hot?: ModuleHotContext): void {');
+    expect(source).toContain('const context = hot ?? selfAccept;');
     // Principle 3 / the addendum's item 1: no module-level mutable kernel.
+    // `let selfAccept` is module-level and mutable and is *not* one: it holds
+    // a hot context, never a kernel, which is the whole of #41's decision.
     expect(source).not.toMatch(/globalThis|let kernel|currentKernel/);
     // The behavioural coverage lives in the *emitted* test, so every generated
     // module inherits it. Assert it is emitted; the fixture project runs it.
@@ -99,8 +101,37 @@ describe('generateModule — B4 golden tree', () => {
     // module is a normative artefact, so it must not imply a portability it
     // does not have: Metro's `module.hot` is a per-module CommonJS binding and
     // is unreachable from a portable ESM file.
-    expect(source).toContain('this block is Vite-only today');
+    expect(source).toContain('the block above is Vite-only');
     expect(source).toContain("Metro's\n * self-accepting callback receives no module namespace");
+    // And must not imply the Vite half is unverified, or the RN half verified.
+    expect(source).toContain('**None of this is verified**');
+  });
+
+  it('H2 / #46: the emitted module self-accepts under Vite own detection rule', async () => {
+    const source = generated.files.find((file) => file.path.endsWith('src/module.ts'))?.contents ?? '';
+
+    // **The guard for issue #46, and the only one a unit test can hold.**
+    //
+    // Vite decides self-acceptance by *lexically* scanning the transformed
+    // source: after an `import.meta` token it slices `.hot`, an optional `?`,
+    // then `.accept` (`isSelfAccepting` in vite's import-analysis plugin).
+    // Any indirection — `hot.accept(cb)` through a parameter, an alias or an
+    // adapter — is invisible to it, the module is treated as
+    // non-self-accepting, and every edit becomes a full page reload. That is
+    // exactly what shipped in #41 and what #46 measured.
+    //
+    // So the assertion is made against the code Vite actually scans, not the
+    // TypeScript on disk: `transformWithOxc` is the same transform the dev
+    // server runs before import analysis, and it is what erases the `as`
+    // casts the emitted block needs (the package owns no bundler types).
+    // Asserting on the `.ts` text instead would pass on a source whose casts
+    // erased to something else entirely.
+    const { transformWithOxc } = await import('vite');
+    const { code } = await transformWithOxc(source, 'module.ts');
+
+    // Anchored to the start of a line so a mention inside the block's own
+    // doc comment — there are several, deliberately — cannot satisfy it.
+    expect(code).toMatch(/^\s*import\.meta\.hot\??\.accept\(/m);
   });
 });
 

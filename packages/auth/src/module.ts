@@ -35,8 +35,8 @@ export const module = defineModule({
  * through. Declared here rather than imported so this package depends on no
  * bundler, not even for a type — and declared *structurally*, for the same
  * reason `ViteHotContext` is in the kernel's `hmr/adapter.ts`: a plain object
- * literal is then a valid test double, which is what makes the block below
- * testable at all.
+ * literal is then a valid test double, which is what makes `acceptHotUpdate`
+ * testable with no bundler in the path.
  */
 export interface ModuleHotContext {
   accept(callback: (next?: unknown) => void): void;
@@ -48,8 +48,73 @@ interface AuthModuleExports {
   readonly acceptHotUpdate?: (kernel: Kernel, hot?: ModuleHotContext) => void;
 }
 
+/** `import.meta` widened with the hot context a dev bundler puts on it. */
+type HotImportMeta = ImportMeta & { hot?: ModuleHotContext };
+
 /**
- * **H2 — the module's own hot-update block.**
+ * Callbacks subscribed through `selfAccept`, in subscription order. Empty in
+ * a production build and under vitest, where nothing ever subscribes.
+ */
+const selfAcceptCallbacks: ((next?: unknown) => void)[] = [];
+
+/**
+ * The hot context `acceptHotUpdate` uses when the host passes none: a
+ * `ModuleHotContext` backed by the literal self-accept below. `undefined`
+ * wherever there is no `import.meta.hot` — a production build, vitest, and
+ * Metro (see the portability note on `acceptHotUpdate`).
+ */
+let selfAccept: ModuleHotContext | undefined;
+
+// **H2 — the literal self-accept, and why it is written exactly like this.**
+//
+// **Vite decides whether a module is self-accepting by lexically scanning
+// this file's source for `import.meta.hot.accept`** during import analysis.
+// It is a static scan, not a runtime observation, so a call reached through
+// *any* indirection — a parameter, a local alias, an adapter — is invisible
+// to it: the module is treated as non-self-accepting, the update propagates
+// to this file's importers, and Vite falls back to a **full page reload**.
+// That is what the first version of this block did, on every edit, for the
+// whole of stage 7 (issue #46; spec §17).
+//
+// Hence: literal and top-level. Which means it runs
+// at **module evaluation time**, long before the composition root exists to
+// hand this module a kernel — so it cannot itself be the callback that does
+// the work. What it registers is a *dispatcher*: one registration with Vite,
+// forwarding to whatever has subscribed through `selfAccept` by the time an
+// edit actually arrives. That keeps one mechanism rather than two, because
+// `selfAccept` is an ordinary `ModuleHotContext` — the same shape a non-Vite
+// host passes in — and `acceptHotUpdate` cannot tell the difference.
+//
+// **No ambient kernel** (issue #41's decision, unchanged): the dispatcher
+// holds callbacks and never a kernel. A kernel reaches this file only by
+// being handed to `acceptHotUpdate` explicitly, so two kernels in one process
+// (R4's test kernels) subscribe two callbacks, each closing over its own
+// kernel, and neither can observe the other.
+//
+// The `as` cast is what keeps the emitted call literal: `import.meta.hot` is
+// not a member of `ImportMeta` in a package that owns no bundler types, and
+// a `const hot = import.meta.hot` alias would erase to `hot.accept(…)` —
+// precisely the indirection that caused #46. A type assertion erases to
+// nothing, so what Vite scans is `import.meta.hot?.accept(…)`, and its lexer
+// allows exactly that one optional `?` between `.hot` and `.accept`.
+if ((import.meta as HotImportMeta).hot) {
+  selfAccept = {
+    accept: (callback) => {
+      selfAcceptCallbacks.push(callback);
+    },
+  };
+  (import.meta as HotImportMeta).hot?.accept((next) => {
+    // A copy: a callback that subscribes during the pass — the re-arm below
+    // does exactly that on the fresh copy — must not change the pass in
+    // flight.
+    for (const callback of [...selfAcceptCallbacks]) {
+      callback(next);
+    }
+  });
+}
+
+/**
+ * **H2 — arms this module's hot block with the kernel it belongs to.**
  *
  * Spec §11 H2 says "the kernel registers HMR acceptance for descriptor,
  * lifecycle and provider chunks". It cannot: a kernel module id (`'auth'`)
@@ -81,29 +146,34 @@ interface AuthModuleExports {
  * covers all three branches; that line in particular is asserted, not just
  * written.
  *
- * It passes the same **hot context** along too, rather than letting the fresh
- * copy re-read the default. The context belongs to the *host*, not to a
- * particular evaluation of this file, so re-reading the default would drop an
- * injected one — an RN shim, or a test double — on the very first edit. Under
- * Vite the old and new contexts address the same module path, so registering
- * through either lands in the same place.
+ * It forwards **the `hot` it was given, not the context it resolved**, and
+ * the difference is load-bearing in both directions. An injected context
+ * belongs to the *host*, not to a particular evaluation of this file, so
+ * re-reading the default would drop an RN shim or a test double on the very
+ * first edit — it is passed on. The Vite default must *not* be passed on:
+ * `selfAccept` dispatches through the `import.meta.hot` registration made by
+ * *this* evaluation, and Vite clears those callbacks when the fresh copy
+ * registers its own. Forwarding it would re-arm the kernel into a dispatcher
+ * nothing will ever call again — the second edit would then be accepted and
+ * silently do nothing, which is worse than a reload. The fresh copy resolves
+ * its own `selfAccept` instead, which is the one its literal block just wired.
  *
  * ---
  *
- * ### Portability: this block is Vite-only today. Read this before shipping to React Native.
+ * ### Portability: the block above is Vite-only. Read this before shipping to React Native.
  *
- * The `hot` parameter defaults to `import.meta.hot`, which is the Vite /
- * Rollup convention. **Metro does not have it.** Metro exposes a *per-module*
- * `module.hot`, which is a CommonJS-era local binding and is simply not
- * reachable from a portable ESM file — so on React Native the default lookup
- * yields `undefined` and this block is a **silent no-op**: the module still
- * works, it just never hot-replaces, and edits fall back to whatever Metro
- * does with an unaccepted update.
+ * `import.meta.hot` is the Vite / Rollup convention. **Metro does not have
+ * it.** Metro exposes a *per-module* `module.hot`, a CommonJS-era local
+ * binding that a portable ESM file cannot name at all — and least of all this
+ * one, whose own `module` export shadows the identifier. So under Metro
+ * `selfAccept` is `undefined`, this whole block is a **silent no-op**, and
+ * edits fall back to whatever Metro does with an unaccepted update: the
+ * module still works, it just never hot-replaces.
  *
- * That is why `hot` is a parameter. An RN host supplies its own:
+ * That is why `hot` is a parameter. An RN host supplies its own context:
  *
  * ```ts
- * // in a Metro build, from a file that has `module` in scope
+ * // from a file that has `module` in scope, in a Metro build
  * acceptHotUpdate(kernel, { accept: (cb) => module.hot.accept(() => cb(freshExports)) });
  * ```
  *
@@ -112,24 +182,31 @@ interface AuthModuleExports {
  * the new copy has been evaluated, with no arguments. A shim that just
  * forwards `module.hot.accept(cb)` would hand `undefined` to the callback
  * below, which then takes the "no exports" branch and does nothing, silently.
- * Passing the fresh exports is the whole job of the RN shim.
+ *
+ * **Say plainly what that shim does and does not buy**, because the sentence
+ * above is the whole of the RN story and it is weaker than it looks: the
+ * shim's `module.hot` is *its own* chunk's, not this file's. It therefore
+ * accepts updates for every module the shim's file imports, cannot tell which
+ * of them changed, and must re-read the namespace itself. Per-module Metro
+ * self-acceptance needs a Metro-side entry file per module, or a transform,
+ * and this generator emits neither. **None of this is verified**: there is no
+ * React Native app in this repo, so the paragraph above is reasoning, not
+ * evidence — unlike the Vite half, which is measured (issue #46).
  *
  * ADR-5 forbids *kernel* code from naming a bundler's hot API. This is app
  * code, and `import.meta` is read through a cast so the package needs no
  * `vite/client` types.
  *
  * @param kernel the kernel this module is registered with.
- * @param hot the host's hot context. Defaults to `import.meta.hot`; pass one
- *   explicitly on a bundler that is not Vite, or in a test.
+ * @param hot the host's hot context. Defaults to the literal self-accept
+ *   above; pass one explicitly on a bundler that is not Vite, or in a test.
  */
-export function acceptHotUpdate(
-  kernel: Kernel,
-  hot: ModuleHotContext | undefined = (import.meta as ImportMeta & { hot?: ModuleHotContext }).hot,
-): void {
-  if (hot === undefined) {
+export function acceptHotUpdate(kernel: Kernel, hot?: ModuleHotContext): void {
+  const context = hot ?? selfAccept;
+  if (context === undefined) {
     return;
   }
-  hot.accept((next) => {
+  context.accept((next) => {
     const replacement = next as AuthModuleExports | undefined;
     // No exports means either a syntax error in the edited file or a host
     // whose accept callback does not pass a namespace (Metro — see above).
