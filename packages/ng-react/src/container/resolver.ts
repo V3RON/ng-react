@@ -20,6 +20,7 @@ import { isAllOfDep, isOptionalDep, isToken, MODULE_ID } from '../token';
 import type { AnyToken, Dep, Token } from '../token';
 import type { AnyProviderRecord } from '../provider';
 import type { Disposable } from '../types';
+import { orderContributions } from './collections';
 import type { ProviderRegistry, RegisteredProvider } from './registry';
 
 /** ADR-1's default; overridable per `Resolver` instance. */
@@ -57,6 +58,13 @@ export interface ResolverOptions {
   readonly onError?: (error: unknown) => void;
   /** ADR-1: timeout for awaited async disposal. Default `2000`. */
   readonly disposeTimeoutMs?: number;
+  /**
+   * C5 ordering (task 2.3): the position of `moduleId` in the kernel's
+   * activation (topological) order, used to order contribution
+   * collections. See `ContributionCollectionsOptions.getTopologicalIndex`
+   * for the contract and the documented no-kernel fallback.
+   */
+  readonly getTopologicalIndex?: (moduleId: string) => number;
 }
 
 /** One cached instance, enough context to dispose it later. */
@@ -89,6 +97,7 @@ export class Resolver {
   private readonly getDependsOn: (moduleId: string) => readonly string[] | undefined;
   private readonly onError: (error: unknown) => void;
   private readonly disposeTimeoutMs: number;
+  private readonly getTopologicalIndex: (moduleId: string) => number;
 
   // C2 singleton scope: one instance for the app lifetime. Keyed by the
   // provider's own frozen `ProviderRecord` object, which is a stable,
@@ -121,6 +130,7 @@ export class Resolver {
     this.getDependsOn = options.getDependsOn ?? (() => undefined);
     this.onError = options.onError ?? (() => {});
     this.disposeTimeoutMs = options.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS;
+    this.getTopologicalIndex = options.getTopologicalIndex ?? (() => 0);
   }
 
   /**
@@ -135,6 +145,36 @@ export class Resolver {
    */
   resolve<T>(token: Token<T>, options: ResolveOptions): T {
     return this.resolveToken(token as AnyToken, options.requester) as T;
+  }
+
+  /**
+   * C5: the full contribution collection for `token`, in module
+   * topological order (`orderContributions`, task 2.3), each contribution
+   * constructed in its own scope.
+   *
+   * This is the *only* place a contribution collection is constructed:
+   * `deps: [allOf(Token)]` and `container.getAll(Token)` both land here, so
+   * the two can never disagree about ordering or about which instances they
+   * see. An unknown token yields `[]`, not an error.
+   *
+   * **C4 for a contribution: each contribution is resolved on behalf of
+   * its own owner (C9 provenance), not on behalf of whoever asked for the
+   * collection.** Hence no `ResolveOptions` here — the caller's resolution
+   * context deliberately does not reach a contribution, and a parameter
+   * that silently did nothing would be worse than no parameter. See the
+   * long argument in `collections.ts`'s header; the short version is that
+   * `injectAll` is not one resolution chain but N independent ones, one
+   * per contributor, each started on behalf of the module that supplied
+   * it. `requester` still propagates unchanged within each of those chains
+   * (`construct` passes it down to every nested dep), so C4's propagation
+   * rule is untouched — only the *seed* of a contribution's chain changes.
+   */
+  resolveAllOf<T>(token: Token<T>): readonly T[] {
+    const contributions = this.registry.getContributions(token);
+    const ordered = orderContributions(contributions, this.getTopologicalIndex);
+    // C4/C9: `entry.owner` — kernel-assigned provenance, so this is a pure
+    // function of registration and can never depend on who resolved first.
+    return ordered.map((entry) => this.construct(entry, entry.owner));
   }
 
   /**
@@ -195,15 +235,6 @@ export class Resolver {
     return this.construct(entry, requester);
   }
 
-  private resolveAllOf(token: AnyToken, requester: string): readonly unknown[] {
-    // task 2.3: contribution ordering (topological, by providing module)
-    // is that task's concern. For now this resolves in registry
-    // registration order, which is what `getContributions` returns; the
-    // two tasks must agree on the final ordering contract.
-    const contributions = this.registry.getContributions(token as Token<unknown>);
-    return contributions.map((entry) => this.construct(entry, requester));
-  }
-
   private resolveDep(dep: Dep, requester: string): unknown {
     if (isToken(dep)) {
       return this.resolveToken(dep as AnyToken, requester);
@@ -226,7 +257,7 @@ export class Resolver {
       return this.construct(entry, requester);
     }
     if (isAllOfDep(dep)) {
-      return this.resolveAllOf(dep.token as AnyToken, requester);
+      return this.resolveAllOf(dep.token);
     }
     // Unreachable given provider.ts's validateDeps — every deps[] element
     // was already checked to be a Token/OptionalDep/AllOfDep at
