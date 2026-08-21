@@ -44,6 +44,16 @@ describe('@ng-react/eslint-config-modules preset shape', () => {
     const importX = must(plugins['import-x'], "plugins['import-x']");
     expect(must(importX.rules, 'importX.rules')['no-cycle']).toBeDefined();
     expect(configRules['import-x/no-cycle']).toBe('error');
+    expect(configRules['import-x/no-unresolved']).toBe('error');
+
+    // Issue #43: both of these are prerequisites for `no-cycle` to report
+    // anything at all in a TypeScript workspace, and both fail *silently* when
+    // absent. `src/no-cycle.test.ts` is what proves they work; this only pins
+    // that they are still declared.
+    const settings = must(config.settings, 'config.settings');
+    expect(settings['import-x/resolver-next']).toHaveLength(1);
+    expect(settings['import-x/extensions']).toContain('.ts');
+    expect(settings['import-x/extensions']).toContain('.tsx');
   });
 
   it('configs.strict escalates the R2 heuristic to error and leaves the rest unchanged', () => {
