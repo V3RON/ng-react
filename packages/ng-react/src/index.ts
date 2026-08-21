@@ -49,3 +49,10 @@ export { provide, contribute } from './provider';
 // define-module.ts — module descriptor declaration API (D1-D4).
 export type { ModuleDescriptor, DefineModuleInput } from './define-module';
 export { defineModule } from './define-module';
+
+// kernel/kernel.ts — the kernel: registration, the dependency graph and
+// inspect() (M3, G1-G3, A2). Exactly the three names task 3.1 asks for; the
+// `inspect()` result types stay internal for now and are reachable as
+// `ReturnType<Kernel['inspect']>`.
+export type { Kernel, KernelOptions } from './kernel/kernel';
+export { createKernel } from './kernel/kernel';
