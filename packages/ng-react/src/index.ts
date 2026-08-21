@@ -69,3 +69,10 @@ export { createKernel } from './kernel/kernel';
 // `ErrorSink`/`ErrorInfo` are types above, and the router that delivers to
 // the sinks is the kernel's business, not a consumer's.
 export { ErrorSinkToken } from './kernel/failure';
+
+// react/ — the React bindings (R1, R2, R3, H6, ADR-2). ADR-6: these are the
+// only exports whose implementation imports `react`; importing this barrel
+// does not pull React in unless one of them is used (`sideEffects: false`).
+export type { ModuleState } from './react/hooks';
+export { AppKernel, ModuleScope, useKernel, useModuleScope } from './react/context';
+export { useModule, useService, useServiceAll, useServiceOptional } from './react/hooks';
