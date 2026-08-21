@@ -1,4 +1,5 @@
-// The kernel: registration (task 3.1) and activation (task 3.2).
+// The kernel: registration (task 3.1), activation (task 3.2), and
+// deactivation plus the failure policy (task 3.3).
 //
 // `createKernel(options)` performs spec §6's registration pass
 // synchronously — validate refs (M3, ADR-2), build the graph (`graph.ts`),
@@ -17,9 +18,11 @@
 // none may be — that is acceptance criterion 9, pinned by `kernel.test.ts`.
 // A `lazy` module's thunks stay untouched until something triggers it.
 //
-// Still stubs, owned by task 3.3: `deactivate` (A4's cascade), `retry`
-// (F3), the quarantine half of the failure policy, and F4's `ErrorSinkToken`
-// routing. Each has a `task 3.3` seam comment where it plugs in.
+// Teardown is A4's cascade (`deactivate`) driving one per-module sequence
+// (`disposeModule` → `teardown`), which F3's quarantine shares. The delivery
+// rules for F4's `ErrorSinkToken` live in `failure.ts`; this file decides
+// *what* is reported and *who it is attributed to* (C9), which is the half
+// no sink may be trusted with.
 //
 // ADR-6: no `react` import, here or anywhere else under `src/` outside
 // `src/react/`.
@@ -37,8 +40,9 @@ import {
 import type { ModuleRef } from '../module-ref';
 import type { AnyProviderRecord } from '../provider';
 import type { Token } from '../token';
-import type { LoadStrategy, ModuleStatus, Scope, Unsubscribe } from '../types';
+import type { ErrorPhase, LoadStrategy, ModuleStatus, Scope, Unsubscribe } from '../types';
 import { ModuleContextImpl } from './context';
+import { ErrorRouter, ErrorSinkToken, raiseFatal } from './failure';
 import { buildModuleGraph } from './graph';
 import type { ModuleGraph } from './graph';
 
@@ -69,19 +73,23 @@ export interface KernelOptions {
   readonly initTimeoutMs?: number;
   /** ADR-1: awaited-disposal timeout in milliseconds. Default `2_000`. */
   readonly disposeTimeoutMs?: number;
-  /** Dev-mode behaviour (F2 red screen, richer diagnostics). Defaults to `process.env.NODE_ENV !== 'production'`. */
+  /** Dev-mode behaviour (F2's console diagnostics). Defaults to `process.env.NODE_ENV !== 'production'`. */
   readonly dev?: boolean;
   /**
-   * L3: reports a lifecycle error that must not abort the operation that
-   * produced it — a `ctx` cleanup that threw, or a module `dispose(ctx)`
-   * that threw or timed out (ADR-1).
+   * **F2**: called when a `critical` module fails during the startup
+   * activation pass. With no handler the failure is rethrown from a fresh
+   * macrotask so the host's global error reporting surfaces it (a red
+   * screen in dev — building that screen is the host's job, not the
+   * kernel's). See `raiseFatal` in `failure.ts`.
    *
-   * A temporary injection point. F4 makes error reporting a contribution
-   * collection (`ErrorSinkToken`) owned by the kernel, and task 3.3 routes
-   * these there; wiring it now would give the sinks two feeds, which
-   * principle 5 rejects. Defaults to a no-op.
+   * This is deliberately **not** an error-reporting hook: every other
+   * error the kernel handles goes to the `ErrorSinkToken` collection (F4),
+   * and so does this one, *in addition*. `onFatal` answers a different
+   * question — "startup cannot continue, what should the host do?" — which
+   * no contributed sink can answer, because the app it belongs to is the
+   * one that failed to come up.
    */
-  readonly onError?: (error: unknown) => void;
+  readonly onFatal?: (error: unknown) => void;
 }
 
 /** One row of `inspect()`'s module table (G3). */
@@ -173,9 +181,34 @@ export interface Kernel {
    * the condition (those must never hold the splash screen up).
    */
   whenStartupComplete(): Promise<void>;
-  /** A4: disposes `ref` and every active module that transitively depends on it. Task 3.3. */
+  /**
+   * **A4**: disposes `ref`'s module **and every active module that
+   * transitively depends on it, in reverse topological order, before
+   * disposing the module itself** — dependents die first, the target dies
+   * last.
+   *
+   * A no-op for a module that is not `ready`. Single-flight like
+   * activation: concurrent calls for the same module await one cascade. A
+   * disposed module can be activated again and gets a fresh context and
+   * fresh module-scoped instances.
+   *
+   * The kernel deliberately has no notion of *why* a module is being
+   * deactivated. Spec §6 A4 names feature-flag kills, logout flows, tests
+   * and HMR; every one of those is a subsystem or a host translating its
+   * own trigger into this call, exactly as with `activate`.
+   */
   deactivate(ref: ModuleRef): Promise<void>;
-  /** F3: re-attempts activation of a quarantined module. Task 3.3. */
+  /**
+   * **F3**: re-attempts activation of a quarantined (`failed`) module from
+   * a clean slate — fresh context, fresh registration, fresh
+   * module-scoped instances.
+   *
+   * Per module, not a cascade: a dependent that failed because *this*
+   * module was quarantined stays `failed`, and is retried by its own
+   * `retry(ref)` once this one succeeds. Retrying the dependent first
+   * simply fails again with the same cause chain, which is the honest
+   * answer while the dependency is still broken.
+   */
   retry(ref: ModuleRef): Promise<void>;
 }
 
@@ -230,8 +263,17 @@ export class KernelImpl implements Kernel {
   private readonly activations = new Map<string, Promise<void>>();
   /** The live `ModuleContext` per activated module, retained for L3/L4 teardown. */
   private readonly contexts = new Map<string, ModuleContextImpl>();
-  /** L3 seam: see `KernelOptions.onError`. */
-  private readonly onError: (error: unknown) => void;
+  /**
+   * A4 single-flight: the in-flight *deactivation* cascade per module id,
+   * kept separate from `activations` for the same reason the two APIs are
+   * separate — a caller awaiting `deactivate` must not be handed an
+   * activation's promise, and vice versa.
+   */
+  private readonly deactivations = new Map<string, Promise<void>>();
+  /** **F4**: the one route from a kernel-handled error to the error sinks. */
+  private readonly errorRouter: ErrorRouter;
+  /** F2: see `KernelOptions.onFatal`. */
+  private readonly onFatal: ((error: unknown) => void) | undefined;
   /** A3 hook point — see `Kernel.whenStartupComplete`. */
   private readonly startupComplete: Promise<void>;
   private readonly resolveStartup: () => void;
@@ -246,7 +288,16 @@ export class KernelImpl implements Kernel {
     this.initTimeoutMs = options.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS;
     this.disposeTimeoutMs = options.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS;
     this.dev = options.dev ?? DEV_BY_DEFAULT;
-    this.onError = options.onError ?? (() => {});
+    this.onFatal = options.onFatal;
+    // F4: constructed before the container, because the container's own
+    // error reporting is wired straight into it below. Both callbacks read
+    // `this` lazily, so neither depends on construction order.
+    this.errorRouter = new ErrorRouter({
+      resolveSinks: (accept) => this.container.getAllWhere(ErrorSinkToken, accept),
+      // F4: a sink contributed by a quarantined or disposed module is
+      // skipped — and `getAllWhere` applies this *before* constructing it.
+      isModuleLive: (moduleId) => this.statuses.get(moduleId) === 'ready',
+    });
 
     // §6 step 1 — validate refs (M3, ADR-2).
     const modules = options.modules;
@@ -303,9 +354,16 @@ export class KernelImpl implements Kernel {
       // which the resolver treats as "no suggestion possible".
       getDependsOn: (moduleId) => (this.graph.has(moduleId) ? this.graph.dependenciesOf(moduleId) : undefined),
       disposeTimeoutMs: this.disposeTimeoutMs,
-      // `onError` is deliberately left at its default no-op: routing
-      // lifecycle errors to `ErrorSinkToken` (F4) is task 3.3's, and
-      // inventing a second route now would be a second way to do it.
+      // **F4**: the container's disposal errors (including ADR-1's
+      // `DisposeTimeoutError`) and its C5 notification errors now reach the
+      // error sinks. This callback was a no-op from task 2.2 until now, so
+      // every one of those errors was silently dropped.
+      //
+      // ADR-2: the container omits `moduleId` when no single module owns
+      // the error; `'app'` is the reserved id for exactly that case.
+      onError: (error, info) => {
+        this.report(error, info.moduleId ?? APP_REQUESTER, info.phase);
+      },
     });
     // C8: the full universe of module ids the kernel knows. Given G2 this
     // is exactly the registered set — a `dependsOn` id that is not
@@ -542,19 +600,29 @@ export class KernelImpl implements Kernel {
    *
    * Public on this internal class but **not** on the `Kernel` interface:
    * `kernel.deactivate(ref)` is the public door and it owes callers A4's
-   * *cascade* (every active dependent first, in reverse topological order),
-   * which task 3.3 owns. This is the per-module half that the cascade — and
-   * F3's quarantine, and H2's HMR re-activation — will each call once per
-   * module. Exposing it now keeps that sequence in one place instead of
-   * three.
+   * *cascade* (every active dependent first, in reverse topological order).
+   * This is the per-module half the cascade calls once per module, and it
+   * is the only implementation of that sequence — `quarantine` (F3) and
+   * H2's HMR re-activation go through `teardown` below rather than
+   * repeating it.
    *
    * The order below is load-bearing, and step 3 before step 4 especially:
    * `Container.disposeModuleScope` and `Container.withdraw` are separate
    * primitives and **neither calls the other** (a deliberate call in task
    * 2.2 — the container does not decide lifecycle ordering; the kernel
-   * does). Withdrawing first removes the provider records that describe how
-   * to dispose the instances, so every module-scoped instance leaks, with
-   * no error and no failing test.
+   * does).
+   *
+   * **Why that order, precisely.** Not because withdrawing first leaks the
+   * instances: it does not, and the earlier claim that it did (issue #16's
+   * first sequencing note) was disproved on the merged container in #32.
+   * `Resolver` keys its module-scoped cache by owner and each cached entry
+   * carries its own `record`, so `disposeModuleScope` never consults the
+   * registry and an earlier `withdraw` cannot starve it. The real reason is
+   * **C5's visible-state rule**: `withdraw` notifies contribution
+   * subscribers, and withdrawing first notifies them while this module's
+   * instances are still live — a subscriber would observe a collection that
+   * has already dropped the module whose objects are still running. Dispose
+   * first and the notification tells the truth.
    *
    *  1. `ctx` cleanups, in reverse registration order (L3)
    *  2. the optional `dispose(ctx)` handler, awaited under ADR-1's timeout
@@ -568,44 +636,174 @@ export class KernelImpl implements Kernel {
    * already `disposed`).
    */
   async disposeModule(moduleId: string): Promise<void> {
-    const descriptor = this.descriptors.get(moduleId);
     const status = this.statuses.get(moduleId);
-    if (descriptor === undefined || status === undefined || status === 'registered' || status === 'disposed') {
+    if (!this.descriptors.has(moduleId) || status === undefined || status === 'registered' || status === 'disposed') {
       return;
     }
+    await this.teardown(moduleId, { callDisposeHandler: true });
+    this.failures.delete(moduleId);
+    this.setStatus(moduleId, 'disposed');
+  }
+
+  /**
+   * Steps 1-5 of `disposeModule`'s sequence, shared with F3's quarantine.
+   *
+   * Split out so that "how a module is torn down" has exactly one
+   * implementation (principle 5) while the two callers keep the two things
+   * they legitimately disagree about: the final status (`disposed` vs
+   * `failed`, which quarantine has already set and must keep, along with
+   * its retained error, F1), and whether the descriptor's `dispose(ctx)`
+   * handler runs at all.
+   *
+   * **Quarantine does not call `dispose(ctx)`**: it tears down a module
+   * whose `init` never completed, and a hand-written `dispose` mirrors a
+   * *completed* `init` — spec §8 calls writing one an anti-pattern
+   * precisely because it duplicates state the ctx already tracks. Running
+   * it against a half-built module would hand it exactly the inconsistent
+   * state it was never written for. The cleanups `init` did register still
+   * run (step 1), which is what actually prevents the leak F3 calls out.
+   */
+  private async teardown(moduleId: string, options: { readonly callDisposeHandler: boolean }): Promise<void> {
+    const descriptor = this.descriptors.get(moduleId);
     const ctx = this.contexts.get(moduleId);
 
     // 1 — L3: reverse registration order; a throwing cleanup is reported
-    // and does not abort the rest.
+    // and does not abort the rest. **F3**: this is the step that runs the
+    // effects a module registered before its `init` threw.
     ctx?.runCleanups();
 
     // 2 — the optional hand-written handler, which §8 calls an anti-pattern
     // but does not forbid. It runs *after* the cleanups and while the ctx is
     // still alive, because it is the one caller legitimately holding it.
-    if (descriptor.dispose !== undefined && ctx !== undefined) {
+    if (options.callDisposeHandler && descriptor?.dispose !== undefined && ctx !== undefined) {
       await this.runDisposeHandler(moduleId, descriptor.dispose, ctx);
     }
 
-    // 3 before 4 — see this method's doc comment.
+    // 3 before 4 — see `disposeModule`'s doc comment.
     await this.container.disposeModuleScope(moduleId);
     this.container.withdraw(moduleId);
 
-    // 5 and 6.
+    // 5. `withdraw` is what makes re-activation possible at all: the
+    // registry rejects a second `register()` for a still-registered module
+    // id (`DuplicateRegistrationError`), so a teardown that skipped it
+    // would turn every `retry`/re-`activate` into a registration failure.
     ctx?.markDead();
     this.contexts.delete(moduleId);
     this.activations.delete(moduleId);
-    this.failures.delete(moduleId);
-    this.setStatus(moduleId, 'disposed');
   }
 
-  /** A4 — task 3.3. */
+  /**
+   * **A4**: disposes `ref`'s module and every active module that
+   * transitively depends on it, in reverse topological order, before
+   * disposing the module itself.
+   *
+   * See the `Kernel` interface for the contract. Rejects rather than
+   * throwing synchronously for an unregistered ref, matching `activate`.
+   */
   deactivate(ref: ModuleRef): Promise<void> {
-    return Promise.reject(notImplemented('deactivate', ref, '3.3'));
+    let moduleId: string;
+    try {
+      moduleId = this.requireRegistered(ref, 'deactivate');
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const inFlight = this.deactivations.get(moduleId);
+    if (inFlight !== undefined) {
+      return inFlight;
+    }
+    const cascade = this.runDeactivation(moduleId);
+    this.deactivations.set(moduleId, cascade);
+    return cascade;
   }
 
-  /** F3 — task 3.3. */
+  /**
+   * A4's cascade. Two decisions worth stating:
+   *
+   * **Which modules.** `[moduleId, ...dependentsOf(moduleId, transitive)]`
+   * is already in topological order — every dependent sits after the
+   * module it depends on, by definition — so reversing it *is* reverse
+   * topological order, and the target lands last. Only `ready` modules take
+   * part: a `registered` one has nothing to tear down, and a `failed` one
+   * has already been torn down by quarantine (F3) and must keep its
+   * retained error rather than being quietly relabelled `disposed`.
+   *
+   * **Sequential, never `Promise.all`.** A4 specifies an *order*, and a
+   * dependent must be gone before the module it depends on begins
+   * disposing — otherwise its `dispose(ctx)` can resolve a service whose
+   * provider has already been withdrawn.
+   */
+  private async runDeactivation(moduleId: string): Promise<void> {
+    try {
+      // A2/A4: never tear down a module mid-activation — that would race
+      // `init` against its own cleanups. The failure of an in-flight
+      // activation is not this caller's to observe (the activation's own
+      // awaiters get it, F1), so it is swallowed here.
+      await this.activations.get(moduleId)?.catch(() => {});
+      // Only the target's activation is awaited, not every dependent's. A
+      // dependent that is still `activating` is not `ready`, so it is not
+      // part of the cascade; if it completes afterwards it will simply fail
+      // to resolve the withdrawn providers and quarantine itself (F3),
+      // which is the correct outcome and needs no special case here.
+      if (this.statuses.get(moduleId) !== 'ready') {
+        // A4: deactivating an inactive module is a no-op.
+        return;
+      }
+      const cascade = [moduleId, ...this.graph.dependentsOf(moduleId, { transitive: true })]
+        .filter((id) => this.statuses.get(id) === 'ready')
+        .reverse();
+      for (const id of cascade) {
+        await this.disposeModule(id);
+      }
+    } finally {
+      this.deactivations.delete(moduleId);
+    }
+  }
+
+  /**
+   * **F3**: re-attempts activation of a quarantined module from a clean
+   * slate. See the `Kernel` interface for the contract.
+   *
+   * "Clean slate" is already true by the time this runs: quarantine tore
+   * the module down when it failed, so there is no stale context, no
+   * lingering registration and no module-scoped instance to clear here.
+   * Dropping the retained failure and the `failed` status is the whole
+   * difference between this and `activate`, which deliberately refuses to
+   * re-attempt (a dependent must not silently re-run a broken module's
+   * `init` on every resolution attempt).
+   */
   retry(ref: ModuleRef): Promise<void> {
-    return Promise.reject(notImplemented('retry', ref, '3.3'));
+    let moduleId: string;
+    try {
+      moduleId = this.requireRegistered(ref, 'retry');
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (this.statuses.get(moduleId) === 'failed') {
+      this.failures.delete(moduleId);
+      this.setStatus(moduleId, 'registered');
+    }
+    return this.activateById(moduleId);
+  }
+
+  /**
+   * **F3**: quarantines a module whose activation failed.
+   *
+   * Its providers and contributions are withdrawn — so the reactive
+   * collections (C5) notify and a subsystem module drops the failed
+   * module's contributions automatically — its module-scoped instances are
+   * disposed, the cleanups its partial `init` registered are run, and its
+   * context is killed (L4). The module keeps `failed` and keeps its
+   * retained error (F1); `retry` is the only way back.
+   *
+   * Never throws: it runs from `runActivation`'s `catch`, where a throw
+   * would replace the module's real failure with a teardown detail.
+   */
+  private async quarantine(moduleId: string): Promise<void> {
+    try {
+      await this.teardown(moduleId, { callDisposeHandler: false });
+    } catch (error) {
+      this.report(error, moduleId, 'dispose');
+    }
   }
 
   /**
@@ -634,11 +832,16 @@ export class KernelImpl implements Kernel {
         this.markCriticalStartupReady(moduleId);
       } catch (error) {
         if (descriptor.critical) {
-          // F2 seam (task 3.3): fatal-handler / red-screen dispatch goes here.
+          // **F2**: startup fails visibly. Both halves fire — the promise
+          // rejects for a host that awaited it, and `onFatal` (or its
+          // rethrowing default) fires for the host that did not. The
+          // remaining eager modules are not activated: startup is over.
           this.rejectStartup(error);
+          raiseFatal(error, { dev: this.dev, ...(this.onFatal === undefined ? {} : { onFatal: this.onFatal }) });
           return;
         }
-        // F3 seam (task 3.3): quarantine this module and let startup continue.
+        // **F3**: this module is already quarantined by `runActivation`;
+        // the rest of the app comes up without it.
       }
     }
     // Reached only when no critical eager module failed; a redundant
@@ -718,18 +921,30 @@ export class KernelImpl implements Kernel {
       const ctx = new ModuleContextImpl({
         moduleId,
         container: this.container,
-        onError: this.onError,
+        // **L3/F4**: a `ctx.effect` cleanup that throws is reported to the
+        // error sinks, attributed to this module in the `cleanup` phase.
+        // This callback was a no-op from task 3.2 until now.
+        onError: (error) => {
+          this.report(error, moduleId, 'cleanup');
+        },
       });
       this.contexts.set(moduleId, ctx);
       await this.withActivationTimeout(moduleId, () => this.evaluateModule(moduleId, descriptor, ctx));
       this.setStatus(moduleId, 'ready');
+      // F4: this module may be the one that contributes the error sinks.
+      // Anything buffered while no sink existed goes out now, in order.
+      this.errorRouter.flush();
     } catch (error) {
       // F1: the failure is retained and surfaced by `inspect()`.
       this.failures.set(moduleId, error);
       this.setStatus(moduleId, 'failed');
-      // F3 seam (task 3.3): quarantine — withdraw this module's providers
-      // and contributions so the reactive collections drop them — plugs in
-      // here, between retaining the failure and rethrowing it.
+      // F3: quarantine, *before* the error is reported or rethrown. The
+      // status is already `failed`, so the sinks this module contributed
+      // are skipped by the report below — which is the point: a module that
+      // just failed to activate does not get to handle the report about
+      // itself.
+      await this.quarantine(moduleId);
+      this.report(error, moduleId, 'activate');
       throw error;
     } finally {
       this.activations.delete(moduleId);
@@ -837,8 +1052,10 @@ export class KernelImpl implements Kernel {
         (error: unknown) => {
           if (settled) {
             // The module is already `failed` by timeout; this is only
-            // reported so it does not vanish.
-            this.onError(error);
+            // reported so it does not vanish. Phase `init` rather than
+            // `activate`: activation was already decided (and reported)
+            // when the timeout fired.
+            this.report(error, moduleId, 'init');
             return;
           }
           settled = true;
@@ -873,7 +1090,7 @@ export class KernelImpl implements Kernel {
         let settled = false;
         const timer = setTimeout(() => {
           settled = true;
-          this.onError(new ModuleDisposeTimeoutError(moduleId, timeoutMs));
+          this.report(new ModuleDisposeTimeoutError(moduleId, timeoutMs), moduleId, 'dispose');
           resolve();
         }, timeoutMs);
         result.then(
@@ -890,14 +1107,23 @@ export class KernelImpl implements Kernel {
               settled = true;
               clearTimeout(timer);
             }
-            this.onError(error);
+            this.report(error, moduleId, 'dispose');
             resolve();
           },
         );
       });
     } catch (error) {
-      this.onError(error);
+      this.report(error, moduleId, 'dispose');
     }
+  }
+
+  /**
+   * **F4/C9**: the single door every kernel-side error report goes
+   * through — `moduleId` is assigned here, from what the kernel was doing,
+   * never read off the error or reported by the failing code.
+   */
+  private report(error: unknown, moduleId: string, phase: ErrorPhase): void {
+    this.errorRouter.report(error, { moduleId, phase });
   }
 
   /**
@@ -951,14 +1177,6 @@ export class KernelImpl implements Kernel {
     }
     return ref.id;
   }
-}
-
-/** Builds the placeholder error for a lifecycle method a later task owns. */
-function notImplemented(api: string, ref: ModuleRef, task: string): InvalidDescriptorError {
-  return new InvalidDescriptorError(
-    `kernel.${api}() is not implemented yet (task ${task}); this kernel only performs registration.`,
-    typeof ref?.id === 'string' ? ref.id : undefined,
-  );
 }
 
 /** F1/G3: renders a retained failure for `inspect()`, keeping the result JSON-safe. */

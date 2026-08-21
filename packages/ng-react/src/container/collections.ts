@@ -107,7 +107,7 @@
 
 import type { AnyProviderRecord } from '../provider';
 import type { AnyToken, Token } from '../token';
-import type { Unsubscribe } from '../types';
+import type { ErrorReporter, Unsubscribe } from '../types';
 import type { ProviderRegistry, RegisteredProvider } from './registry';
 
 /**
@@ -170,10 +170,16 @@ export interface ContributionCollectionsOptions {
   /**
    * Receives an error thrown by a subscriber callback, or by a contribution
    * factory during a notification pass, so neither aborts the remaining
-   * subscribers. Error-sink routing (F4) is stage 3's concern; this is the
-   * injection point. Defaults to a no-op.
+   * subscribers. Wired by the kernel to F4's `ErrorSinkToken` routing (task
+   * 3.3). Defaults to a no-op.
+   *
+   * Both call sites report **without** a `moduleId`: a `subscribeAll`
+   * subscriber belongs to whoever registered it (often the composition
+   * root, not a module) and a notification-pass construction spans every
+   * contributor of the token at once, so neither has one honest owner. The
+   * kernel substitutes ADR-2's reserved `'app'` — see `ErrorReporter`.
    */
-  readonly onError?: (error: unknown) => void;
+  readonly onError?: ErrorReporter;
 }
 
 /**
@@ -190,7 +196,7 @@ interface Subscription {
 
 export class ContributionCollections {
   private readonly getTopologicalIndex: (moduleId: string) => number;
-  private readonly onError: (error: unknown) => void;
+  private readonly onError: ErrorReporter;
 
   /** Live subscriptions per token. A token with no subscribers has no entry. */
   private readonly subscriptions = new Map<AnyToken, Set<Subscription>>();
@@ -342,7 +348,7 @@ export class ContributionCollections {
         // existence cannot change what anyone else sees.
         values = this.resolveAll(token);
       } catch (error) {
-        this.onError(error);
+        this.onError(error, { phase: 'resolve' });
         continue;
       }
       this.lastSeen.set(token, next);
@@ -354,7 +360,7 @@ export class ContributionCollections {
         try {
           subscription.notify(values as readonly never[]);
         } catch (error) {
-          this.onError(error);
+          this.onError(error, { phase: 'resolve' });
         }
       }
     }

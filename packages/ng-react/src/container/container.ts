@@ -129,6 +129,24 @@ export class Container {
   }
 
   /**
+   * **F4**: `getAll` restricted to contributions whose owning module
+   * `accept` returns `true` for — evaluated **before** the contribution is
+   * constructed.
+   *
+   * The kernel's error-sink routing is the one caller, and the ordering is
+   * its whole reason for existing: a sink contributed by a module that is
+   * `failed` or `disposed` must be skipped, and skipping it *after*
+   * `getAll` would mean the quarantined module's factory had already run
+   * and (for `singleton`/`module` scope) been cached. Goes straight to the
+   * resolver rather than through `ContributionCollections`, which is a pure
+   * pass-through for construction anyway — the C5 ordering, laziness and
+   * per-owner resolution context are the resolver's and are unchanged here.
+   */
+  getAllWhere<T>(token: Token<T>, accept: (ownerModuleId: string) => boolean): readonly T[] {
+    return this.resolver.resolveAllOf(token, accept);
+  }
+
+  /**
    * C5's `subscribeAll`: notifies `callback` when `token`'s contribution
    * set changes (module registered contributions, or was withdrawn by
    * disposal or F3 quarantine). Does not fire on subscribe — read the

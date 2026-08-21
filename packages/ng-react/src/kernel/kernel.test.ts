@@ -13,10 +13,12 @@ import {
   UnknownModuleError,
 } from '../errors';
 import { moduleRef } from '../module-ref';
+import type { ModuleRef } from '../module-ref';
 import { contribute, provide } from '../provider';
 import type { AnyProviderRecord } from '../provider';
 import { createToken, MODULE_ID } from '../token';
-import type { ModuleContext, ModuleStatus } from '../types';
+import type { ErrorInfo, ErrorSink, ModuleContext, ModuleStatus } from '../types';
+import { ErrorSinkToken } from './failure';
 import { createKernel, KernelImpl } from './kernel';
 import type { Kernel } from './kernel';
 
@@ -60,6 +62,34 @@ function appModules(): ModuleDescriptor[] {
     defineModule({ id: UiModule, dependsOn: [OrdersModule] }),
     defineModule({ id: TelemetryModule }),
   ];
+}
+
+/** One `ErrorSink.report` call, captured. */
+interface SinkReport {
+  readonly error: unknown;
+  readonly info: ErrorInfo;
+}
+
+/**
+ * F4: a module whose only job is to contribute a recording `ErrorSink`.
+ *
+ * A module and not a raw `contribute` call, because that is the only way a
+ * sink can exist: `ErrorSinkToken` is a contribution collection and the
+ * kernel assigns provenance from the activating descriptor (C9). It also
+ * makes the "skip sinks in failed/disposed modules" rule testable — the
+ * sink has an owner whose status can change.
+ */
+function sinkModule(id: ModuleRef, reports: SinkReport[]): ModuleDescriptor {
+  return defineModule({
+    id,
+    providers: () => [
+      contribute(ErrorSinkToken, {
+        factory: (): ErrorSink => ({
+          report: (error, info) => void reports.push({ error, info }),
+        }),
+      }),
+    ],
+  });
 }
 
 /** Every permutation of `items`, capped — determinism is asserted over these. */
@@ -630,14 +660,16 @@ describe('kernel resolution — the three injected container callbacks', () => {
   });
 });
 
-describe('kernel activation surface — task 3.3 stubs', () => {
-  it('deactivate/retry reject with a "not implemented" error naming the task', async () => {
-    const kernel = createKernel({ modules: appModules() });
-    await expect(kernel.deactivate(AuthModule)).rejects.toThrow(
-      'kernel.deactivate() is not implemented yet (task 3.3); this kernel only performs registration.',
+describe('kernel lifecycle surface — unregistered refs', () => {
+  it('A4/F3: deactivate and retry reject for a ref this kernel never registered', async () => {
+    const kernel = createKernel({ modules: [defineModule({ id: AuthModule })] });
+    await expect(kernel.deactivate(OrdersModule)).rejects.toThrow(
+      "kernel.deactivate(): module 'orders' is not registered with this kernel. " +
+        'Add its descriptor to the composition root.',
     );
-    await expect(kernel.retry(AuthModule)).rejects.toThrow(
-      'kernel.retry() is not implemented yet (task 3.3); this kernel only performs registration.',
+    await expect(kernel.retry(OrdersModule)).rejects.toThrow(
+      "kernel.retry(): module 'orders' is not registered with this kernel. " +
+        'Add its descriptor to the composition root.',
     );
   });
 });
@@ -922,7 +954,13 @@ describe('kernel activation — spec §6 (A1, A2, A3)', () => {
   });
 
   it('F2: an eager critical module that fails rejects whenStartupComplete with its failure', async () => {
+    // `onFatal` is supplied, not because this test is about it (the next
+    // describe block covers F2 properly) but because its *default* is to
+    // rethrow from a macrotask, which would surface as an uncaught
+    // exception in the run rather than in this test.
+    const onFatal = vi.fn();
     const kernel = createKernel({
+      onFatal,
       modules: [
         defineModule({
           id: AuthModule,
@@ -1187,14 +1225,14 @@ describe('kernel activation — A3 timeout', () => {
     expect(seen).toEqual(['activating', 'failed']);
   });
 
-  it('A3: a late init *rejection* after a timeout is reported, not thrown as an unhandled rejection', async () => {
+  it('A3/F4: a late init *rejection* after a timeout reaches the error sinks, not an unhandled rejection', async () => {
     vi.useFakeTimers();
-    const onError = vi.fn();
+    const reports: SinkReport[] = [];
     let rejectInit!: (error: unknown) => void;
     const kernel = createKernel({
       initTimeoutMs: 5_000,
-      onError,
       modules: [
+        sinkModule(TelemetryModule, reports),
         defineModule({
           id: OrdersModule,
           init: () =>
@@ -1204,17 +1242,21 @@ describe('kernel activation — A3 timeout', () => {
         }),
       ],
     });
+    await kernel.activate(TelemetryModule);
 
     const assertion = expect(kernel.activate(OrdersModule)).rejects.toBeInstanceOf(ActivationTimeoutError);
     await vi.advanceTimersByTimeAsync(5_000);
     await assertion;
+    // The timeout itself is an activation failure and is reported too (F1).
+    reports.length = 0;
 
     rejectInit(new Error('too late'));
     await flushMicrotasks();
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect((onError.mock.calls[0]?.[0] as ModuleActivationError).message).toBe(
+    expect(reports).toHaveLength(1);
+    expect((reports[0]?.error as ModuleActivationError).message).toBe(
       "Activating module 'orders' failed in its init(ctx): too late",
     );
+    expect(reports[0]?.info).toEqual({ moduleId: 'orders', phase: 'init' });
     expect(kernel.status(OrdersModule)).toBe('failed');
   });
 
@@ -1400,12 +1442,12 @@ describe('kernel teardown sequencing — L3, L4, C7', () => {
     expect(kernel.inspect().providers).toEqual([]);
   });
 
-  it('L3: a cleanup that throws is reported and the remaining cleanups still run', async () => {
-    const onError = vi.fn();
+  it('L3/F4: a cleanup that throws reaches the error sinks and the remaining cleanups still run', async () => {
+    const reports: SinkReport[] = [];
     const ran: string[] = [];
     const kernel = createKernel({
-      onError,
       modules: [
+        sinkModule(TelemetryModule, reports),
         defineModule({
           id: OrdersModule,
           init: (ctx) => {
@@ -1419,23 +1461,25 @@ describe('kernel teardown sequencing — L3, L4, C7', () => {
       ],
     }) as KernelImpl;
 
+    await kernel.activate(TelemetryModule);
     await kernel.activate(OrdersModule);
     await kernel.disposeModule('orders');
 
     expect(ran).toEqual(['third', 'first']);
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('unsubscribe failed');
+    expect(reports).toHaveLength(1);
+    expect((reports[0]?.error as Error).message).toBe('unsubscribe failed');
+    expect(reports[0]?.info).toEqual({ moduleId: 'orders', phase: 'cleanup' });
     expect(kernel.status(OrdersModule)).toBe('disposed');
   });
 
   it('ADR-1: an async dispose(ctx) that overruns disposeTimeoutMs is reported and does not block teardown', async () => {
     vi.useFakeTimers();
     try {
-      const onError = vi.fn();
+      const reports: SinkReport[] = [];
       const kernel = createKernel({
-        onError,
         disposeTimeoutMs: 2_000,
         modules: [
+          sinkModule(TelemetryModule, reports),
           defineModule({
             id: OrdersModule,
             dispose: () =>
@@ -1446,13 +1490,15 @@ describe('kernel teardown sequencing — L3, L4, C7', () => {
         ],
       }) as KernelImpl;
 
+      await kernel.activate(TelemetryModule);
       await kernel.activate(OrdersModule);
       const teardown = kernel.disposeModule('orders');
       await vi.advanceTimersByTimeAsync(2_000);
       await teardown;
 
       expect(kernel.status(OrdersModule)).toBe('disposed');
-      expect((onError.mock.calls[0]?.[0] as Error).message).toBe(
+      expect(reports[0]?.info).toEqual({ moduleId: 'orders', phase: 'dispose' });
+      expect((reports[0]?.error as Error).message).toBe(
         "dispose(ctx) for module 'orders' did not complete within 2000ms. The module is marked disposed " +
           'regardless; the dispose call may still be running in the background.',
       );
@@ -1461,11 +1507,11 @@ describe('kernel teardown sequencing — L3, L4, C7', () => {
     }
   });
 
-  it('L3: a dispose(ctx) handler that throws is reported and teardown still completes', async () => {
-    const onError = vi.fn();
+  it('L3/F4: a dispose(ctx) handler that throws reaches the error sinks and teardown still completes', async () => {
+    const reports: SinkReport[] = [];
     const kernel = createKernel({
-      onError,
       modules: [
+        sinkModule(TelemetryModule, reports),
         defineModule({
           id: OrdersModule,
           dispose: () => {
@@ -1475,10 +1521,12 @@ describe('kernel teardown sequencing — L3, L4, C7', () => {
       ],
     }) as KernelImpl;
 
+    await kernel.activate(TelemetryModule);
     await kernel.activate(OrdersModule);
     await kernel.disposeModule('orders');
     expect(kernel.status(OrdersModule)).toBe('disposed');
-    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('dispose blew up');
+    expect((reports[0]?.error as Error).message).toBe('dispose blew up');
+    expect(reports[0]?.info).toEqual({ moduleId: 'orders', phase: 'dispose' });
   });
 
   it('L4: the ctx handed to init is dead after teardown, on every member', async () => {
@@ -1537,5 +1585,756 @@ describe('kernel teardown sequencing — L3, L4, C7', () => {
     await kernel.disposeModule('orders');
     expect(dispose).toHaveBeenCalledTimes(0);
     expect(kernel.status(OrdersModule)).toBe('registered');
+  });
+});
+
+// ===========================================================================
+// Task 3.3 — the deactivation cascade (A4) and the failure policy (F1-F4).
+// ===========================================================================
+
+/** A module-scoped service whose *identity* is the thing under test. */
+interface OrderDraftStore {
+  readonly owner: string;
+  readonly serial: number;
+  disposed: boolean;
+  dispose(): void;
+}
+
+const OrderDraftStoreToken = createToken<OrderDraftStore>('orders/DraftStore');
+const RouteContributionToken = createToken<{ readonly path: string }>('nav/Route');
+
+const AdminModule = moduleRef('admin');
+
+describe('kernel deactivation — A4', () => {
+  /**
+   * The diamond, with `dependsOn` arrows pointing at dependencies:
+   *
+   *   ui → orders → auth
+   *   ui → telemetry → auth
+   *
+   * so `auth` is the base and `ui` is the top. Deactivating `auth` must
+   * dispose `ui`, then `telemetry`, then `orders`, then `auth` — dependents
+   * first, in reverse topological order, target last.
+   */
+  function diamond(sequence: string[]): ModuleDescriptor[] {
+    const record = (id: string): ModuleDescriptor =>
+      defineModule({
+        id: id === 'auth' ? AuthModule : id === 'orders' ? OrdersModule : id === 'telemetry' ? TelemetryModule : UiModule,
+        dependsOn:
+          id === 'auth'
+            ? []
+            : id === 'ui'
+              ? [OrdersModule, TelemetryModule]
+              : [AuthModule],
+        dispose: () => void sequence.push(id),
+      });
+    return [record('auth'), record('orders'), record('telemetry'), record('ui')];
+  }
+
+  it('A4: disposes every transitive dependent before the target, in exact reverse topological order', async () => {
+    const sequence: string[] = [];
+    const kernel = createKernel({ modules: diamond(sequence) });
+    await kernel.activate(UiModule);
+    expect(kernel.inspect().modules.map((row) => row.id)).toEqual(['auth', 'orders', 'telemetry', 'ui']);
+
+    await kernel.deactivate(AuthModule);
+
+    // The exact sequence, not set membership: 'all four were disposed'
+    // passes for every wrong order, including the one that disposes the
+    // target first.
+    expect(sequence).toEqual(['ui', 'telemetry', 'orders', 'auth']);
+    expect(kernel.inspect().modules.map((row) => row.status)).toEqual([
+      'disposed',
+      'disposed',
+      'disposed',
+      'disposed',
+    ]);
+  });
+
+  it('A4: disposing a leaf leaves its dependencies alone', async () => {
+    const sequence: string[] = [];
+    const kernel = createKernel({ modules: diamond(sequence) });
+    await kernel.activate(UiModule);
+
+    await kernel.deactivate(UiModule);
+
+    expect(sequence).toEqual(['ui']);
+    expect(kernel.status(UiModule)).toBe('disposed');
+    expect(kernel.status(OrdersModule)).toBe('ready');
+    expect(kernel.status(TelemetryModule)).toBe('ready');
+    expect(kernel.status(AuthModule)).toBe('ready');
+  });
+
+  it('A4: deactivating an inactive module is a no-op — registered, and already disposed', async () => {
+    const sequence: string[] = [];
+    const kernel = createKernel({ modules: diamond(sequence) });
+
+    // Never activated.
+    await kernel.deactivate(OrdersModule);
+    expect(sequence).toEqual([]);
+    expect(kernel.status(OrdersModule)).toBe('registered');
+
+    await kernel.activate(OrdersModule);
+    await kernel.deactivate(OrdersModule);
+    expect(sequence).toEqual(['orders']);
+
+    // Already disposed: nothing runs a second time.
+    await kernel.deactivate(OrdersModule);
+    expect(sequence).toEqual(['orders']);
+    expect(kernel.status(AuthModule)).toBe('ready');
+  });
+
+  it('A4: deactivation is single-flight — concurrent calls await one cascade', async () => {
+    const sequence: string[] = [];
+    const kernel = createKernel({ modules: diamond(sequence) });
+    await kernel.activate(UiModule);
+
+    const [first, second] = [kernel.deactivate(AuthModule), kernel.deactivate(AuthModule)];
+    expect(first).toBe(second);
+    await Promise.all([first, second]);
+
+    expect(sequence).toEqual(['ui', 'telemetry', 'orders', 'auth']);
+  });
+
+  it('A4: a re-activated module gets a fresh context and a *different* module-scoped instance', async () => {
+    let serial = 0;
+    const contexts: ModuleContext[] = [];
+    const captured: OrderDraftStore[] = [];
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: OrdersModule,
+          providers: () => [
+            provide(OrderDraftStoreToken, {
+              scope: 'module',
+              deps: [MODULE_ID],
+              factory: (owner): OrderDraftStore => {
+                serial += 1;
+                return {
+                  owner,
+                  serial,
+                  disposed: false,
+                  dispose(): void {
+                    this.disposed = true;
+                  },
+                };
+              },
+            }),
+          ],
+          init: (ctx) => {
+            contexts.push(ctx);
+            // C4/ADR-2: resolved through the module's own ctx, so MODULE_ID
+            // is 'orders'. `kernel.get` would see the requester 'app' — the
+            // *instance* is the same either way, because module scope is
+            // keyed by the provider's owner (C2).
+            captured.push(ctx.get(OrderDraftStoreToken));
+          },
+        }),
+      ],
+    });
+
+    await kernel.activate(OrdersModule);
+    const before = kernel.get(OrderDraftStoreToken);
+    expect(before).toBe(captured[0]);
+    expect(before).toMatchObject({ owner: 'orders', serial: 1, disposed: false });
+
+    await kernel.deactivate(OrdersModule);
+    expect(before.disposed).toBe(true);
+    // The provider record is gone with the module (C5/F3 withdrawal).
+    expect(kernel.inspect().providers).toEqual([]);
+
+    await kernel.activate(OrdersModule);
+    const after = kernel.get(OrderDraftStoreToken);
+
+    // Not merely "activation succeeded": a *different object*.
+    expect(after).not.toBe(before);
+    expect(after).toBe(captured[1]);
+    expect(after.serial).toBe(2);
+    expect(after.owner).toBe('orders');
+    expect(after.disposed).toBe(false);
+    // A fresh context, and the old one stays dead (L4).
+    expect(contexts).toHaveLength(2);
+    expect(contexts[0]).not.toBe(contexts[1]);
+    expect(() => contexts[0]?.moduleId).toThrow(
+      "ModuleContext for 'orders' is dead: the module has been disposed. " +
+        'This usually means code is holding a stale closure across HMR.',
+    );
+    expect(contexts[1]?.moduleId).toBe('orders');
+    expect(kernel.status(OrdersModule)).toBe('ready');
+  });
+
+  it('A4: a quarantined dependent keeps its failed status and its retained error, rather than being relabelled disposed', async () => {
+    const kernel = createKernel({
+      modules: [
+        defineModule({ id: AuthModule }),
+        defineModule({
+          id: OrdersModule,
+          dependsOn: [AuthModule],
+          init: () => {
+            throw new Error('draft store unavailable');
+          },
+        }),
+      ],
+    });
+    await expect(kernel.activate(OrdersModule)).rejects.toThrow();
+    expect(kernel.status(OrdersModule)).toBe('failed');
+
+    await kernel.deactivate(AuthModule);
+
+    expect(kernel.status(AuthModule)).toBe('disposed');
+    expect(kernel.status(OrdersModule)).toBe('failed');
+    expect(kernel.inspect().modules.find((row) => row.id === 'orders')?.error?.message).toBe(
+      "Activating module 'orders' failed in its init(ctx): draft store unavailable",
+    );
+  });
+});
+
+describe('kernel failure policy — F1, F2', () => {
+  it('F1: the retained error is readable through status, inspect() and a status subscription', async () => {
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: OrdersModule,
+          init: () => {
+            throw new Error('draft store unavailable');
+          },
+        }),
+      ],
+    });
+    const seen: ModuleStatus[] = [];
+    kernel.subscribeStatus(OrdersModule, (status) => void seen.push(status));
+
+    await expect(kernel.activate(OrdersModule)).rejects.toThrow(
+      "Activating module 'orders' failed in its init(ctx): draft store unavailable",
+    );
+
+    expect(kernel.status(OrdersModule)).toBe('failed');
+    expect(seen).toEqual(['activating', 'failed']);
+    expect(kernel.inspect().modules.find((row) => row.id === 'orders')?.error).toEqual({
+      name: 'ModuleActivationError',
+      code: 'KERNEL_ACTIVATION_FAILED',
+      message: "Activating module 'orders' failed in its init(ctx): draft store unavailable",
+    });
+  });
+
+  it('F2: a critical startup failure rejects whenStartupComplete *and* calls onFatal with the same error', async () => {
+    const onFatal = vi.fn();
+    const kernel = createKernel({
+      onFatal,
+      modules: [
+        defineModule({
+          id: AuthModule,
+          load: 'eager',
+          critical: true,
+          init: () => {
+            throw new Error('no keychain');
+          },
+        }),
+        defineModule({ id: TelemetryModule, load: 'eager' }),
+      ],
+    });
+
+    const startup = kernel.whenStartupComplete();
+    await expect(startup).rejects.toThrow("Activating module 'auth' failed in its init(ctx): no keychain");
+    await flushMicrotasks();
+
+    expect(onFatal).toHaveBeenCalledTimes(1);
+    const [fatal] = onFatal.mock.calls[0] as [Error];
+    await expect(startup).rejects.toBe(fatal);
+    // Startup is over: the pass does not go on to the remaining eager modules.
+    expect(kernel.status(TelemetryModule)).toBe('registered');
+  });
+
+  it('F2: a *non*-critical eager failure never reaches onFatal', async () => {
+    const onFatal = vi.fn();
+    const kernel = createKernel({
+      onFatal,
+      modules: [
+        defineModule({
+          id: AdminModule,
+          load: 'eager',
+          init: () => {
+            throw new Error('sink unavailable');
+          },
+        }),
+      ],
+    });
+
+    // A3: with no eager *critical* module, `whenStartupComplete` resolves
+    // immediately, so it is not a barrier for the eager pass — draining the
+    // microtask queue is.
+    await kernel.whenStartupComplete();
+    await flushMicrotasks();
+    expect(kernel.status(AdminModule)).toBe('failed');
+    expect(onFatal).not.toHaveBeenCalled();
+  });
+});
+
+describe('kernel failure policy — F3 quarantine', () => {
+  it('F3: a failed module has its providers withdrawn, and subscribeAll subscribers are notified', async () => {
+    const notified: (readonly { readonly path: string }[])[] = [];
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: AdminModule,
+          providers: () => [contribute(RouteContributionToken, { factory: () => ({ path: '/admin' }) })],
+        }),
+        defineModule({
+          id: OrdersModule,
+          providers: () => [
+            provide(OrderDraftStoreToken, {
+              scope: 'module',
+              deps: [MODULE_ID],
+              factory: (owner): OrderDraftStore => ({
+                owner,
+                serial: 0,
+                disposed: false,
+                dispose(): void {
+                  this.disposed = true;
+                },
+              }),
+            }),
+            contribute(RouteContributionToken, { factory: () => ({ path: '/orders' }) }),
+          ],
+          init: (ctx) => {
+            // The provider is live at this point — the failure happens after
+            // registration, which is what makes the withdrawal observable.
+            expect(ctx.get(OrderDraftStoreToken).owner).toBe('orders');
+            throw new Error('draft store unavailable');
+          },
+        }),
+      ],
+    }) as KernelImpl;
+
+    await kernel.activate(AdminModule);
+    kernel.container.subscribeAll(RouteContributionToken, (routes) => void notified.push(routes));
+
+    await expect(kernel.activate(OrdersModule)).rejects.toThrow();
+
+    expect(kernel.status(OrdersModule)).toBe('failed');
+    // Withdrawn: nothing 'orders' registered survives quarantine.
+    expect(kernel.inspect().providers.map((row) => row.owner)).toEqual(['admin']);
+    expect(() => kernel.get(OrderDraftStoreToken)).toThrow(ResolutionError);
+    // C5 reactivity: this is what lets a navigation module drop routes on
+    // its own, with no kernel knowledge of routes.
+    expect(notified).toEqual([
+      // 'orders' registering its contribution, then quarantine withdrawing it.
+      [{ path: '/admin' }, { path: '/orders' }],
+      [{ path: '/admin' }],
+    ]);
+    expect(kernel.getAll(RouteContributionToken)).toEqual([{ path: '/admin' }]);
+  });
+
+  it('F3: cleanups registered by a partial init still run during quarantine', async () => {
+    const ran: string[] = [];
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: OrdersModule,
+          init: (ctx) => {
+            ctx.effect(() => {
+              ran.push('subscribe-bus');
+              return () => void ran.push('unsubscribe-bus');
+            });
+            ctx.effect(() => {
+              ran.push('start-timer');
+              return () => void ran.push('clear-timer');
+            });
+            throw new Error('draft store unavailable');
+          },
+        }),
+      ],
+    });
+
+    await expect(kernel.activate(OrdersModule)).rejects.toThrow();
+
+    // Both cleanups, in reverse registration order (L3) — the module never
+    // reached `ready`, so a status-driven teardown would skip it entirely
+    // and leak the subscription and the timer.
+    expect(ran).toEqual(['subscribe-bus', 'start-timer', 'clear-timer', 'unsubscribe-bus']);
+  });
+
+  it("F3: a quarantined module's module-scoped instances are disposed", async () => {
+    let store: OrderDraftStore | undefined;
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: OrdersModule,
+          providers: () => [
+            provide(OrderDraftStoreToken, {
+              scope: 'module',
+              deps: [MODULE_ID],
+              factory: (owner): OrderDraftStore => ({
+                owner,
+                serial: 0,
+                disposed: false,
+                dispose(): void {
+                  this.disposed = true;
+                },
+              }),
+            }),
+          ],
+          init: (ctx) => {
+            store = ctx.get(OrderDraftStoreToken);
+            throw new Error('draft store unavailable');
+          },
+        }),
+      ],
+    });
+
+    await expect(kernel.activate(OrdersModule)).rejects.toThrow();
+    expect(store?.disposed).toBe(true);
+  });
+
+  it('F3: a dependent fails with a cause chain naming the quarantined module', async () => {
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: PaymentsModule,
+          init: () => {
+            throw new Error('gateway offline');
+          },
+        }),
+        defineModule({ id: OrdersModule, dependsOn: [PaymentsModule] }),
+      ],
+    });
+
+    try {
+      await kernel.activate(OrdersModule);
+      expect.unreachable('expected DependencyActivationError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(DependencyActivationError);
+      expect((error as Error).message).toBe(
+        "Module 'orders' cannot activate: its dependency 'payments' failed to activate. " +
+          "Fix 'payments' and call kernel.retry() for it, or remove it from 'orders's dependsOn.",
+      );
+      expect((error as DependencyActivationError).dependencyId).toBe('payments');
+      const cause = (error as Error).cause as ModuleActivationError;
+      expect(cause).toBeInstanceOf(ModuleActivationError);
+      expect(cause.message).toBe("Activating module 'payments' failed in its init(ctx): gateway offline");
+      expect((cause.cause as Error).message).toBe('gateway offline');
+    }
+    expect(kernel.status(OrdersModule)).toBe('failed');
+    expect(kernel.status(PaymentsModule)).toBe('failed');
+  });
+
+  it('F3: retry re-activates from a clean slate, and the dependent can then be retried too', async () => {
+    let gatewayIsOffline = true;
+    const initCount = vi.fn();
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: PaymentsModule,
+          providers: () => [
+            provide(PaymentGatewayToken, {
+              factory: (): PaymentGateway => ({ charge: () => Promise.resolve('ch_1') }),
+            }),
+          ],
+          init: () => {
+            initCount();
+            if (gatewayIsOffline) {
+              throw new Error('gateway offline');
+            }
+          },
+        }),
+        defineModule({ id: OrdersModule, dependsOn: [PaymentsModule] }),
+      ],
+    });
+
+    await expect(kernel.activate(OrdersModule)).rejects.toBeInstanceOf(DependencyActivationError);
+    expect(kernel.inspect().providers).toEqual([]);
+
+    // Retrying the dependent while the dependency is still broken fails
+    // again, with the same honest cause chain.
+    await expect(kernel.retry(OrdersModule)).rejects.toBeInstanceOf(DependencyActivationError);
+    // Retry is per-module: it clears *this* module's quarantine, and A1 then
+    // finds the dependency still `failed` and rejects with its retained
+    // error rather than silently re-running the broken init.
+    expect(initCount).toHaveBeenCalledTimes(1);
+
+    gatewayIsOffline = false;
+    await kernel.retry(PaymentsModule);
+    expect(kernel.status(PaymentsModule)).toBe('ready');
+    expect(kernel.inspect().modules.find((row) => row.id === 'payments')?.error).toBeUndefined();
+    // Fresh registration: the withdrawal during quarantine is what makes a
+    // second `register()` legal at all (DuplicateRegistrationError otherwise).
+    expect(kernel.inspect().providers.map((row) => row.token)).toEqual(['payments/PaymentGateway']);
+
+    await kernel.retry(OrdersModule);
+    expect(kernel.status(OrdersModule)).toBe('ready');
+    expect(initCount).toHaveBeenCalledTimes(2);
+  });
+
+  it('F3: activate() does not silently re-attempt a quarantined module — only retry() does', async () => {
+    const init = vi.fn(() => {
+      throw new Error('draft store unavailable');
+    });
+    const kernel = createKernel({ modules: [defineModule({ id: OrdersModule, init })] });
+
+    await expect(kernel.activate(OrdersModule)).rejects.toThrow();
+    await expect(kernel.activate(OrdersModule)).rejects.toThrow();
+    expect(init).toHaveBeenCalledTimes(1);
+
+    await expect(kernel.retry(OrdersModule)).rejects.toThrow();
+    expect(init).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('kernel error reporting — F4', () => {
+  it('F4/C9: routes to every contributed sink with kernel-assigned attribution', async () => {
+    const first: SinkReport[] = [];
+    const second: SinkReport[] = [];
+    const kernel = createKernel({
+      modules: [
+        sinkModule(TelemetryModule, first),
+        sinkModule(AdminModule, second),
+        defineModule({
+          id: OrdersModule,
+          init: (ctx) => {
+            ctx.effect(() => () => {
+              throw new Error('unsubscribe failed');
+            });
+          },
+        }),
+      ],
+    }) as KernelImpl;
+
+    await kernel.activate(TelemetryModule);
+    await kernel.activate(AdminModule);
+    await kernel.activate(OrdersModule);
+    await kernel.disposeModule('orders');
+
+    for (const reports of [first, second]) {
+      expect(reports).toHaveLength(1);
+      expect((reports[0]?.error as Error).message).toBe('unsubscribe failed');
+      // C9: 'orders' is assigned by the kernel from the module it was
+      // tearing down. Neither the failing closure nor the sink said so.
+      expect(reports[0]?.info).toEqual({ moduleId: 'orders', phase: 'cleanup' });
+    }
+  });
+
+  it('F4: an activation failure is reported with phase activate, and the failing module never sees its own report', async () => {
+    const observer: SinkReport[] = [];
+    const ownSink: SinkReport[] = [];
+    const kernel = createKernel({
+      modules: [
+        sinkModule(TelemetryModule, observer),
+        defineModule({
+          id: OrdersModule,
+          providers: () => [
+            contribute(ErrorSinkToken, {
+              factory: (): ErrorSink => ({
+                report: (error, info) => void ownSink.push({ error, info }),
+              }),
+            }),
+          ],
+          init: () => {
+            throw new Error('draft store unavailable');
+          },
+        }),
+      ],
+    });
+
+    await kernel.activate(TelemetryModule);
+    await expect(kernel.activate(OrdersModule)).rejects.toThrow();
+
+    expect(observer).toHaveLength(1);
+    expect((observer[0]?.error as Error).message).toBe(
+      "Activating module 'orders' failed in its init(ctx): draft store unavailable",
+    );
+    expect(observer[0]?.info).toEqual({ moduleId: 'orders', phase: 'activate' });
+    // The quarantined module's own sink is skipped — it is exactly the code
+    // that just proved it cannot be trusted.
+    expect(ownSink).toEqual([]);
+  });
+
+  it('F4: a sink in a failed or disposed module is skipped, and is never even constructed', async () => {
+    const live: SinkReport[] = [];
+    const quarantined: SinkReport[] = [];
+    const constructed = vi.fn();
+    const kernel = createKernel({
+      modules: [
+        sinkModule(TelemetryModule, live),
+        defineModule({
+          id: AdminModule,
+          providers: () => [
+            contribute(ErrorSinkToken, {
+              factory: (): ErrorSink => {
+                constructed();
+                return { report: (error, info) => void quarantined.push({ error, info }) };
+              },
+            }),
+          ],
+        }),
+        defineModule({
+          id: OrdersModule,
+          init: (ctx) => {
+            ctx.effect(() => () => {
+              throw new Error('unsubscribe failed');
+            });
+          },
+        }),
+      ],
+    }) as KernelImpl;
+
+    await kernel.activate(TelemetryModule);
+    await kernel.activate(AdminModule);
+    await kernel.activate(OrdersModule);
+    // 'admin' is gone by the time anything is reported.
+    await kernel.disposeModule('admin');
+
+    await kernel.disposeModule('orders');
+
+    expect(live).toHaveLength(1);
+    expect(quarantined).toEqual([]);
+    // The natural bug is to resolve the whole collection and *then* filter
+    // by status, which constructs an instance from a disposed module.
+    expect(constructed).not.toHaveBeenCalled();
+  });
+
+  it('F4: a throwing sink does not stop the other sinks, at kernel level', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const survivor: SinkReport[] = [];
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: AdminModule,
+          providers: () => [
+            contribute(ErrorSinkToken, {
+              factory: (): ErrorSink => ({
+                report: () => {
+                  throw new Error('transport is down');
+                },
+              }),
+            }),
+          ],
+        }),
+        sinkModule(TelemetryModule, survivor),
+        defineModule({
+          id: OrdersModule,
+          init: (ctx) => {
+            ctx.effect(() => () => {
+              throw new Error('unsubscribe failed');
+            });
+          },
+        }),
+      ],
+    }) as KernelImpl;
+
+    await kernel.activate(AdminModule);
+    await kernel.activate(TelemetryModule);
+    await kernel.activate(OrdersModule);
+    await kernel.disposeModule('orders');
+
+    expect(survivor).toHaveLength(1);
+    expect((survivor[0]?.error as Error).message).toBe('unsubscribe failed');
+    expect((consoleError.mock.calls[0]?.[1] as Error).message).toBe('transport is down');
+    consoleError.mockRestore();
+  });
+
+  it('F4: errors raised before any sink exists are buffered and flushed to the first sink that activates', async () => {
+    const reports: SinkReport[] = [];
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: AdminModule,
+          load: 'eager',
+          init: () => {
+            throw new Error('sink unavailable');
+          },
+        }),
+        sinkModule(TelemetryModule, reports),
+      ],
+    });
+
+    // Let the eager startup pass fail 'admin'. The sink module is lazy and
+    // has not activated, so there is nothing to route to yet.
+    await flushMicrotasks();
+    expect(kernel.status(AdminModule)).toBe('failed');
+    expect(reports).toEqual([]);
+
+    await kernel.activate(TelemetryModule);
+
+    expect(reports).toHaveLength(1);
+    expect((reports[0]?.error as Error).message).toBe(
+      "Activating module 'admin' failed in its init(ctx): sink unavailable",
+    );
+    expect(reports[0]?.info).toEqual({ moduleId: 'admin', phase: 'activate' });
+  });
+
+  it('F4/ADR-1: the container DisposeTimeoutError finally reaches the sinks', async () => {
+    vi.useFakeTimers();
+    try {
+      const reports: SinkReport[] = [];
+      const kernel = createKernel({
+        disposeTimeoutMs: 2_000,
+        modules: [
+          sinkModule(TelemetryModule, reports),
+          defineModule({
+            id: OrdersModule,
+            providers: () => [
+              provide(OrderDraftStoreToken, {
+                scope: 'module',
+                deps: [MODULE_ID],
+                factory: (owner): OrderDraftStore => ({
+                  owner,
+                  serial: 0,
+                  disposed: false,
+                  dispose(): Promise<void> {
+                    return new Promise<void>((resolve) => {
+                      setTimeout(resolve, 30_000);
+                    });
+                  },
+                }),
+              }),
+            ],
+            init: (ctx) => void ctx.get(OrderDraftStoreToken),
+          }),
+        ],
+      }) as KernelImpl;
+
+      await kernel.activate(TelemetryModule);
+      await kernel.activate(OrdersModule);
+      const teardown = kernel.disposeModule('orders');
+      await vi.advanceTimersByTimeAsync(2_000);
+      await teardown;
+
+      expect(reports).toHaveLength(1);
+      expect((reports[0]?.error as Error).message).toBe(
+        "Disposing 'orders/DraftStore' (owned by 'orders') did not complete within 2000ms. " +
+          'The instance is marked disposed regardless; the dispose call may still be running in the background.',
+      );
+      // ADR-2/C9: attribution comes from the *owner* of the provider, which
+      // only the container knows and only the kernel may assign.
+      expect(reports[0]?.info).toEqual({ moduleId: 'orders', phase: 'dispose' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('F4: a subscribeAll subscriber that throws is attributed to app (ADR-2) in the resolve phase', async () => {
+    const reports: SinkReport[] = [];
+    const kernel = createKernel({
+      modules: [
+        sinkModule(TelemetryModule, reports),
+        defineModule({
+          id: AdminModule,
+          providers: () => [contribute(RouteContributionToken, { factory: () => ({ path: '/admin' }) })],
+        }),
+      ],
+    }) as KernelImpl;
+
+    await kernel.activate(TelemetryModule);
+    // Registered by the composition root, not by a module — which is why
+    // there is no honest module attribution for its failure.
+    kernel.container.subscribeAll(RouteContributionToken, () => {
+      throw new Error('route table rebuild failed');
+    });
+
+    await kernel.activate(AdminModule);
+
+    expect(reports).toHaveLength(1);
+    expect((reports[0]?.error as Error).message).toBe('route table rebuild failed');
+    expect(reports[0]?.info).toEqual({ moduleId: 'app', phase: 'resolve' });
   });
 });

@@ -19,7 +19,7 @@ import {
 import { isAllOfDep, isOptionalDep, isToken, MODULE_ID } from '../token';
 import type { AnyToken, Dep, Token } from '../token';
 import type { AnyProviderRecord } from '../provider';
-import type { Disposable } from '../types';
+import type { Disposable, ErrorReporter } from '../types';
 import { orderContributions } from './collections';
 import type { ProviderRegistry, RegisteredProvider } from './registry';
 
@@ -52,10 +52,13 @@ export interface ResolverOptions {
   readonly getDependsOn?: (moduleId: string) => readonly string[] | undefined;
   /**
    * Reports a disposal error or timeout that must not abort remaining
-   * disposals (L3). Error-sink routing (F4) is a stage-3 concern; this
-   * task only needs the injection point. Defaults to a no-op.
+   * disposals (L3). Wired by the kernel to F4's `ErrorSinkToken` routing
+   * (task 3.3), which is the only reason it takes an attribution argument:
+   * a sink is told *which module's* instance failed to dispose (C9), and
+   * this is the only layer that knows. Defaults to a no-op, which is what
+   * a container driven standalone in a test gets.
    */
-  readonly onError?: (error: unknown) => void;
+  readonly onError?: ErrorReporter;
   /** ADR-1: timeout for awaited async disposal. Default `2000`. */
   readonly disposeTimeoutMs?: number;
   /**
@@ -95,7 +98,7 @@ function getDisposeFn(record: AnyProviderRecord, instance: unknown): (() => void
 
 export class Resolver {
   private readonly getDependsOn: (moduleId: string) => readonly string[] | undefined;
-  private readonly onError: (error: unknown) => void;
+  private readonly onError: ErrorReporter;
   private readonly disposeTimeoutMs: number;
   private readonly getTopologicalIndex: (moduleId: string) => number;
 
@@ -169,12 +172,19 @@ export class Resolver {
    * (`construct` passes it down to every nested dep), so C4's propagation
    * rule is untouched — only the *seed* of a contribution's chain changes.
    */
-  resolveAllOf<T>(token: Token<T>): readonly T[] {
+  resolveAllOf<T>(token: Token<T>, accept?: (ownerModuleId: string) => boolean): readonly T[] {
     const contributions = this.registry.getContributions(token);
     const ordered = orderContributions(contributions, this.getTopologicalIndex);
     // C4/C9: `entry.owner` — kernel-assigned provenance, so this is a pure
     // function of registration and can never depend on who resolved first.
-    return ordered.map((entry) => this.construct(entry, entry.owner));
+    //
+    // **F4**: `accept` filters by owner **before** `construct` runs, and
+    // that order is the whole point of the parameter existing. The kernel
+    // must not construct an error sink belonging to a `failed` or
+    // `disposed` module; filtering the *resolved* array afterwards would
+    // have already run that module's factory and cached the instance.
+    const kept = accept === undefined ? ordered : ordered.filter((entry) => accept(entry.owner));
+    return kept.map((entry) => this.construct(entry, entry.owner));
   }
 
   /**
@@ -381,7 +391,7 @@ export class Resolver {
       result = disposeFn();
     } catch (err) {
       // L3: a disposal error does not abort remaining disposals.
-      this.onError(err);
+      this.onError(err, { moduleId: cached.ownerId, phase: 'dispose' });
       return;
     }
 
@@ -407,14 +417,17 @@ export class Resolver {
     try {
       const outcome = await Promise.race([pending.then(() => 'done' as const), timeoutPromise]);
       if (outcome === 'timeout') {
-        this.onError(new DisposeTimeoutError(cached.ownerId, cached.record.token.label, this.disposeTimeoutMs));
+        this.onError(new DisposeTimeoutError(cached.ownerId, cached.record.token.label, this.disposeTimeoutMs), {
+          moduleId: cached.ownerId,
+          phase: 'dispose',
+        });
         // Fire-and-forget: still report a late rejection instead of
         // producing an unhandled rejection.
-        pending.catch((err) => this.onError(err));
+        pending.catch((err) => this.onError(err, { moduleId: cached.ownerId, phase: 'dispose' }));
       }
     } catch (err) {
       if (!timedOut) {
-        this.onError(err);
+        this.onError(err, { moduleId: cached.ownerId, phase: 'dispose' });
       }
     } finally {
       if (timer !== undefined) {
