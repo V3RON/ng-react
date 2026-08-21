@@ -25,7 +25,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import { AppKernel } from '@ng-react/kernel';
 import type { Kernel } from '@ng-react/kernel';
 import { AuthModule } from '@app/auth/contract';
-import { DashboardCardToken } from '@app/dashboard/contract';
+import { DashboardCardToken, DashboardModule } from '@app/dashboard/contract';
 import { DebugModule } from '@app/debug/contract';
 import { NavModule } from '@app/nav/contract';
 import { OrdersModule } from '@app/orders/contract';
@@ -41,7 +41,18 @@ async function mountDashboard(): Promise<Kernel> {
   // and then asserting on either is racy (HANDOFF §5.13, issue #51).
   // `activate` is idempotent and single-flight, so these join the in-flight
   // eager activation rather than starting a second one.
+  //
+  // **`dashboard` was named in the comment above and not awaited** — the
+  // sentence said "either" and the code waited for one. `/dashboard` is
+  // contributed by `dashboard`'s own `providers.ts`, so `nav-link-/dashboard`
+  // exists only once that module is `ready`; the test simply always won the
+  // race, until issue #53 lifted `orderedCards` into
+  // `packages/dashboard/src/ordering.ts` and put one more module in the async
+  // chain behind `import('./providers')`. That is enough to lose it roughly
+  // one run in three. §5.13's pattern, one layer down: not "settled on a
+  // timer" but "settled on the wrong module".
   await kernel.activate(NavModule);
+  await kernel.activate(DashboardModule);
   render(
     <AppKernel kernel={kernel}>
       <App log={log} />

@@ -110,7 +110,14 @@ describe('acceptance criterion 8 — the boundary preset rejects all three', () 
         line: 12,
         message:
           'override: true is only allowed in the composition root ' +
-          '(**/apps/react/src/composition-root.ts) or test files ' +
+          // **Two roots since issue #53**, and the message lists both. That is
+          // an expectation update rather than a behaviour change: the rule
+          // renders whatever `compositionRoot` globs it was configured with,
+          // and `apps/native` is a second application with a second root. The
+          // message is asserted verbatim (AGENTS.md §7, checklist item 5), so
+          // this line is where a third application would show up too.
+          '(**/apps/react/src/composition-root.ts, **/apps/native/src/composition-root.ts) ' +
+          'or test files ' +
           '(**/*.test.{ts,tsx}, **/test/**) (spec C6) — this call is in a module package. ' +
           'Move this override into the composition root, or remove override: true and change ' +
           'the provider being overridden instead.',

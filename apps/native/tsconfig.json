@@ -1,0 +1,36 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // **The native half of issue #52 §3's platform decision, and the reason
+    // `tsconfig.base.json` calls itself the *web* baseline.**
+    //
+    // `moduleSuffixes: [".native", ""]` makes every resolution in *this
+    // program* try `X.native` before `X`. Because `tsc` follows imports into
+    // the workspace packages' TypeScript sources — they are published as
+    // `./src/*.ts` through their `exports` maps, with no build step — this
+    // program contains `@app/orders/src/providers.ts` and friends, and
+    // resolves their `./screen` to `screen.native.tsx`. That is what makes
+    // this file the *only* type-check anywhere of the native half of the
+    // split: the web `tsc` compiles the same packages with `[".web", ""]`.
+    //
+    // The `""` entry keeps every import without a platform sibling resolving
+    // normally. Omitting it would break every import in the workspace.
+    "moduleSuffixes": [".native", ""],
+    // No `DOM`. A React Native program has no DOM, and leaving it in would let
+    // a `document.` slip through this type-check into a runtime crash on
+    // device — which is precisely the class of mistake the platform split
+    // exists to prevent.
+    "lib": ["ES2022"],
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    // `node` is here for one file: `src/shell/platform-split.test.ts` reads the
+    // packages' sources off disk. A React Native program has no Node runtime,
+    // and `@types/node` is a devDependency for exactly that reason — but the
+    // alternative was excluding tests from this program, which would leave the
+    // app's own tests unchecked by `pnpm -r typecheck`.
+    "types": ["vitest/globals", "node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules", "ios", "android", ".expo"]
+}

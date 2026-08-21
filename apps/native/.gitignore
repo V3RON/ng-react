@@ -1,0 +1,7 @@
+# Expo / React Native build output. `expo prebuild` regenerates ios/ and
+# android/ from app.json, and .expo/ holds machine-specific dev-server state —
+# none of it is source.
+.expo/
+android/
+dist/
+ios/

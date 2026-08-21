@@ -60,40 +60,10 @@
 import { useKernel, useServiceAll } from '@ng-react/kernel';
 import type { ReactElement } from 'react';
 import { DashboardCardToken } from './contract';
-import type { DashboardCard } from './contract';
-
-/**
- * **C9 — who contributed each card, asked of the kernel rather than of the
- * card.**
- *
- * `DashboardCard` carries no owner (see the contract), so attribution comes
- * from `kernel.inspect().contributions`, which C9 requires be derived from
- * the activating descriptor. The rows for one token arrive in the same order
- * `useServiceAll` returns its values in — C5's "module topological order,
- * declaration order within a module" — so position `i` of one aligns with
- * position `i` of the other.
- *
- * **The pairing therefore happens before the sort, never after.** The card
- * order a person reads is `(order ?? Infinity, C5 index)`; the owner index is
- * C5's. Sorting the cards and then indexing `owners[i]` would attribute every
- * card to whichever module happens to sit at its new position — a bug that is
- * invisible while every module contributes one card, which is why
- * `dashboard.test.tsx` asserts attribution with `order` values that actually
- * reorder the list.
- */
-function orderedCards(
-  cards: readonly DashboardCard[],
-  owners: readonly string[],
-): readonly { readonly card: DashboardCard; readonly owner: string }[] {
-  return cards
-    .map((card, index) => ({ card, owner: owners[index] ?? 'unknown', index }))
-    .sort(
-      (left, right) =>
-        (left.card.order ?? Number.POSITIVE_INFINITY) -
-          (right.card.order ?? Number.POSITIVE_INFINITY) || left.index - right.index,
-    )
-    .map(({ card, owner }) => ({ card, owner }));
-}
+// **C9 pairing and the display sort live in `./ordering`**, imported by this
+// file and by `screen.native.tsx`. Issue #53 lifted them there rather than
+// letting the native screen re-derive them; that file carries the reasoning.
+import { orderedCards } from './ordering';
 
 /**
  * **R3/C5** — the dashboard is, at its core, `useServiceAll(DashboardCardToken)`.
