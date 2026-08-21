@@ -1381,7 +1381,7 @@ describe('kernel activation — the container hand-off (C4, C9)', () => {
 describe('kernel teardown sequencing — L3, L4, C7', () => {
   /**
    * The whole L3 sequence in one assertion. Steps 3 and 4 —
-   * `disposeModuleScope` before `withdraw` — are separate container
+   * `disposeModuleInstances` before `withdraw` — are separate container
    * primitives and neither calls the other, so the kernel is the only place
    * this order exists; `withdraw` is observed through the C5 notification it
    * fires, which is what makes its position visible at all.
@@ -1786,6 +1786,135 @@ describe('kernel deactivation — A4', () => {
     expect(kernel.inspect().modules.find((row) => row.id === 'orders')?.error?.message).toBe(
       "Activating module 'orders' failed in its init(ctx): draft store unavailable",
     );
+  });
+});
+
+describe('kernel provider lifetimes across deactivation — H4, C6 (#34, #37)', () => {
+  it('H4/#34: a module-owned singleton is disposed on deactivation, and re-activation constructs exactly ONE new instance', async () => {
+    // Issue #34's reproduction verbatim: activate → deactivate → activate,
+    // counting constructions and disposals. Before the fix this printed
+    // `built=2 disposed=[]` — a second live "app-lifetime singleton" with
+    // the first still cached, undisposed and unreachable.
+    interface SessionStore {
+      readonly id: number;
+      readonly touched: string[];
+    }
+    const StoreToken = createToken<SessionStore>('auth/SessionStore');
+    const built: number[] = [];
+    const disposed: number[] = [];
+    let next = 0;
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: AuthModule,
+          providers: () => [
+            provide(StoreToken, {
+              scope: 'singleton',
+              factory: (): SessionStore => {
+                next += 1;
+                built.push(next);
+                return { id: next, touched: [] };
+              },
+              onDispose: (instance) => void disposed.push(instance.id),
+            }),
+          ],
+          init: (ctx) => void ctx.get(StoreToken),
+        }),
+      ],
+    });
+
+    await kernel.activate(AuthModule);
+    expect([built.length, disposed]).toEqual([1, []]);
+
+    await kernel.deactivate(AuthModule);
+    expect([built.length, disposed]).toEqual([1, [1]]);
+
+    await kernel.activate(AuthModule);
+    expect([built.length, disposed]).toEqual([2, [1]]);
+    // The fresh instance is the one that is reachable — not the stale one.
+    expect(kernel.get(StoreToken).id).toBe(2);
+  });
+
+  it('H4/#34: a singleton owned by a module that is NOT deactivated survives its consumer’s teardown', async () => {
+    // The other half of the lifetime rule: ownership decides, not use. A
+    // fix that keyed disposal off the resolving module would pass the test
+    // above and break this one.
+    const disposals: string[] = [];
+    const kernel = createKernel({
+      modules: [
+        defineModule({
+          id: AuthModule,
+          providers: () => [
+            provide(SessionClockToken, {
+              scope: 'singleton',
+              factory: (): SessionClock => ({ now: () => 1 }),
+              onDispose: () => void disposals.push('clock'),
+            }),
+          ],
+        }),
+        defineModule({
+          id: OrdersModule,
+          dependsOn: [AuthModule],
+          init: (ctx) => void ctx.get(SessionClockToken),
+        }),
+      ],
+    });
+    await kernel.activate(OrdersModule);
+    const beforeTeardown = kernel.get(SessionClockToken);
+
+    await kernel.deactivate(OrdersModule);
+
+    expect(disposals).toEqual([]);
+    expect(kernel.status(AuthModule)).toBe('ready');
+    // Same instance: 'auth' never went away, so neither did its singleton.
+    expect(kernel.get(SessionClockToken)).toBe(beforeTeardown);
+  });
+
+  it('C6/#37: a plain provide losing to an override is superseded, not fatal — the overridden module reaches `ready` in either registration order', async () => {
+    // Issue #37's reproduction. Before the fix, order A ended
+    // `A payments status = failed`: mocking `payments/PaymentGateway`
+    // killed `payments`, the module the mock exists *for* (acceptance
+    // criterion 7).
+    const mocksRef = moduleRef('mocks');
+    const real = (): PaymentGateway => ({ charge: async () => 'real' });
+    const mock = (): PaymentGateway => ({ charge: async () => 'mock' });
+    const mocks = defineModule({
+      id: mocksRef,
+      providers: () => [provide(PaymentGatewayToken, { override: true, factory: mock })],
+    });
+    const payments = defineModule({
+      id: PaymentsModule,
+      providers: () => [provide(PaymentGatewayToken, { factory: real })],
+    });
+
+    // Order A — the override registers first.
+    const overrideFirst = createKernel({ modules: [mocks, payments] });
+    await overrideFirst.activate(mocksRef);
+    await expect(overrideFirst.activate(PaymentsModule)).resolves.toBeUndefined();
+    expect(overrideFirst.status(PaymentsModule)).toBe('ready');
+    expect(overrideFirst.ownerOf(PaymentGatewayToken)).toBe('mocks');
+    expect(await overrideFirst.get(PaymentGatewayToken).charge(1)).toBe('mock');
+
+    // Order B — the real module registers first. Unchanged by #37, asserted
+    // here so the two orders are pinned as one behaviour, not two.
+    const realFirst = createKernel({ modules: [mocks, payments] });
+    await realFirst.activate(PaymentsModule);
+    await expect(realFirst.activate(mocksRef)).resolves.toBeUndefined();
+    expect(realFirst.status(PaymentsModule)).toBe('ready');
+    expect(realFirst.ownerOf(PaymentGatewayToken)).toBe('mocks');
+    expect(await realFirst.get(PaymentGatewayToken).charge(1)).toBe('mock');
+
+    // G3: the superseded row is visible, and identical in both orders.
+    const superseded = {
+      token: 'payments/PaymentGateway',
+      kind: 'provide',
+      scope: 'singleton',
+      owner: 'payments',
+      override: false,
+      overriddenBy: 'mocks',
+    };
+    expect(overrideFirst.inspect().providers).toContainEqual(superseded);
+    expect(realFirst.inspect().providers).toContainEqual(superseded);
   });
 });
 

@@ -7,7 +7,6 @@
 
 import { defineModule } from '../define-module';
 import type { ModuleDescriptor } from '../define-module';
-import { DuplicateProviderError } from '../errors';
 import { ErrorSinkToken } from '../kernel/failure';
 import { createKernel } from '../kernel/kernel';
 import { moduleRef } from '../module-ref';
@@ -296,7 +295,19 @@ describe('createTestKernel overrides (C6)', () => {
     await kernel.activate(ordersRef);
     expect(kernel.get(GatewayToken).charge(7)).toBe('mock:7');
     expect(kernel.status(paymentsRef)).toBe('ready');
-    expect(kernel.inspect().providers.find((row) => row.token === 'payments/PaymentGateway')).toBeUndefined();
+    // #37: the module's own record used to be dropped by the harness before
+    // the container saw it, so `inspect()` showed nothing at all for this
+    // token (the harness's own row is hidden). It is now recorded as
+    // superseded, which is what proves the mock displaced a *real* provider
+    // rather than mocking a token no module provides.
+    expect(kernel.inspect().providers.find((row) => row.token === 'payments/PaymentGateway')).toEqual({
+      token: 'payments/PaymentGateway',
+      kind: 'provide',
+      scope: 'module',
+      owner: 'payments',
+      override: false,
+      overriddenBy: 'ng-react/test-kernel',
+    });
     await kernel.dispose();
   });
 
@@ -328,11 +339,12 @@ describe('createTestKernel overrides (C6)', () => {
     expect(kernel.get(GatewayToken).charge(1)).toBe('mock');
   });
 
-  it('C6: a plain provide arriving after an override is a fatal DuplicateProviderError — which is why the harness drops the superseded record', async () => {
-    // Pins the container behaviour that shapes `wrapDescriptor`: C6's
-    // precedence is order-independent about *which record wins*, but the
-    // losing registration is rejected, not ignored, and that rejection fails
-    // the whole module's activation.
+  it('C6/#37: a plain provide arriving after an override is superseded, not fatal — the overridden module still activates', async () => {
+    // The container behaviour that used to shape `wrapDescriptor`, now on a
+    // *raw* kernel with no harness in sight: C6's precedence is
+    // order-independent about which record wins, and since #37 the loser is
+    // ignored rather than rejected, so mocking a token no longer kills the
+    // module being mocked for (acceptance criterion 7).
     const mocksRef = moduleRef('mocks');
     const kernel = createKernel({
       dev: false,
@@ -352,8 +364,17 @@ describe('createTestKernel overrides (C6)', () => {
       ],
     });
     await kernel.whenStartupComplete();
-    await expect(kernel.activate(paymentsRef)).rejects.toThrow(DuplicateProviderError);
-    expect(kernel.status(paymentsRef)).toBe('failed');
+    await expect(kernel.activate(paymentsRef)).resolves.toBeUndefined();
+    expect(kernel.status(paymentsRef)).toBe('ready');
+    expect(kernel.get(GatewayToken).charge(1)).toBe('mock');
+    expect(kernel.inspect().providers).toContainEqual({
+      token: 'payments/PaymentGateway',
+      kind: 'provide',
+      scope: 'singleton',
+      owner: 'payments',
+      override: false,
+      overriddenBy: 'mocks',
+    });
   });
 
   it('C6: an override for a token no module provides is a pure mock and resolves', async () => {

@@ -386,10 +386,10 @@ describe('ContributionCollections', () => {
       });
 
       // C7 disposal of the module's own scope, then the registry mutation
-      // that notifies. `withdraw` is sync and `disposeModuleScope` async, so
+      // that notifies. `withdraw` is sync and `disposeModuleInstances` async, so
       // the container cannot fold the two together — see container.ts and
       // the PR for #13.
-      await container.disposeModuleScope('orders');
+      await container.disposeModuleInstances('orders');
       container.withdraw('orders');
 
       expect(sequence).toEqual(['disposed', 'notified:payments']);

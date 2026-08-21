@@ -30,7 +30,7 @@ describe('Container', () => {
     expect(container.hasToken(token)).toBe(true);
     expect(container.ownerOf(token)).toBe('orders');
 
-    await container.disposeModuleScope('orders');
+    await container.disposeModuleInstances('orders');
     expect(onDispose).toHaveBeenCalledTimes(1);
   });
 
@@ -84,7 +84,7 @@ describe('Container', () => {
     expect(container.hasToken(token)).toBe(false);
     expect(onDispose).not.toHaveBeenCalled();
 
-    await container.disposeModuleScope('orders');
+    await container.disposeModuleInstances('orders');
     expect(onDispose).toHaveBeenCalledTimes(1);
   });
 

@@ -38,7 +38,6 @@ import { moduleRef } from '../module-ref';
 import type { ModuleRef } from '../module-ref';
 import { contribute } from '../provider';
 import type { AnyProviderRecord } from '../provider';
-import type { AnyToken } from '../token';
 import type { ErrorInfo, ModuleContext } from '../types';
 import { attachRecorder, detachRecorder, EvaluationRecorder } from './evaluation-log';
 import { instrumentContext, instrumentRecords, LeakCounters, rebuildRecord } from './leak-counters';
@@ -188,9 +187,6 @@ export function createTestKernel(options: TestKernelOptions): TestKernel {
   // C6: every override is re-declared with `override: true` whether or not
   // the caller set it, which is what R4 means by "via `override: true`".
   const overrides = (options.overrides ?? []).map((record) => rebuildRecord(record, { override: true }));
-  const overriddenTokens = new Set<AnyToken>(
-    overrides.filter((record) => record.kind === 'provide').map((record) => record.token),
-  );
 
   const harness = defineModule({
     id: harnessRef,
@@ -214,7 +210,7 @@ export function createTestKernel(options: TestKernelOptions): TestKernel {
   });
 
   const wrapped = options.modules.map((descriptor) =>
-    wrapDescriptor(descriptor, { harnessRef, overriddenTokens, counters, recorder, dev }),
+    wrapDescriptor(descriptor, { harnessRef, counters, recorder, dev }),
   );
 
   const kernel = createKernel({
@@ -282,7 +278,6 @@ export function createTestKernel(options: TestKernelOptions): TestKernel {
 /** Everything `wrapDescriptor` needs from the enclosing `createTestKernel` call. */
 interface WrapOptions {
   readonly harnessRef: ModuleRef;
-  readonly overriddenTokens: ReadonlySet<AnyToken>;
   readonly counters: LeakCounters;
   readonly recorder: EvaluationRecorder;
   readonly dev: boolean;
@@ -301,16 +296,16 @@ interface WrapOptions {
  * alphabetically), not a guarantee. The added edges are hidden again by
  * `hideHarness` so `inspect()` shows the graph the test wrote.
  *
- * **2. Overridden `provide` records are dropped from this module's own
- * array.** C6's precedence rule in the registry is one-sided and
- * order-independent *about which record wins*, but it is not silent: a plain
- * `provide` arriving for a token an override already holds throws
- * `DuplicateProviderError`, which fails the whole module's activation. Since
- * the harness module always registers first (point 1), leaving the module's
- * own record in place would make every override kill the module it was
- * mocking for. Dropping the superseded record makes the outcome identical in
- * both registration orders, which is what R4 and acceptance criterion 7
- * require. **This is a container behaviour worth revisiting** — see the PR.
+ * **2. The module's own records are passed through untouched, overrides
+ * included.** This is where the harness used to drop a `provide` whose token
+ * an override held, because the registry made the losing plain registration
+ * fatal (`DuplicateProviderError`) and — providers being registered during
+ * activation — killed the module the override was mocking *for*. #37 fixed
+ * that in the registry: the superseded record is now recorded and ignored,
+ * in both registration orders, so the harness no longer has to pre-empt it.
+ * `inspect()` shows the superseded row with `overriddenBy` set, which is
+ * strictly more than the workaround left behind (it dropped the record
+ * before the container ever saw it).
  *
  * **3. The thunks are wrapped, never pre-called.** D1 is the property the
  * kernel exists to protect; a harness that evaluated `providers` early to
@@ -319,7 +314,7 @@ interface WrapOptions {
  * synchronous `init` stays synchronous.
  */
 function wrapDescriptor(descriptor: ModuleDescriptor, options: WrapOptions): ModuleDescriptor {
-  const { harnessRef, overriddenTokens, counters, recorder, dev } = options;
+  const { harnessRef, counters, recorder, dev } = options;
   const moduleId = descriptor.id.id;
   const providers = descriptor.providers;
   const init = descriptor.init;
@@ -337,12 +332,8 @@ function wrapDescriptor(descriptor: ModuleDescriptor, options: WrapOptions): Mod
             if (dev) {
               recorder.record(moduleId, '<providers>');
             }
-            const prepare = (records: AnyProviderRecord[]): AnyProviderRecord[] => {
-              const kept = records.filter(
-                (record) => !(record.kind === 'provide' && overriddenTokens.has(record.token)),
-              );
-              return dev ? instrumentRecords(moduleId, kept, counters) : kept;
-            };
+            const prepare = (records: AnyProviderRecord[]): AnyProviderRecord[] =>
+              dev ? instrumentRecords(moduleId, records, counters) : records;
             const result = providers();
             return isPromise(result) ? result.then(prepare) : prepare(result);
           },
