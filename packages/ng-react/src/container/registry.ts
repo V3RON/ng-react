@@ -1,12 +1,3 @@
-// The provider registry (task 2.1): the store that records `ProviderRecord`s
-// against a kernel-assigned owning module, and enforces every
-// registration-time rule (C5, C6, C9). No resolution here — instance
-// construction, scopes, and disposal are the resolution engine (task 2.2);
-// reactive notification and contribution ordering are task 2.3.
-//
-// `ProviderRegistry` is internal: it is not exported from `index.ts`. The
-// kernel (a later stage) is the only intended caller.
-
 import {
   DuplicateProviderError,
   DuplicateRegistrationError,
@@ -20,18 +11,15 @@ import type { AnyToken, Token } from '../token';
 /**
  * A `ProviderRecord` together with the module that registered it.
  *
- * **C9** — provenance is kernel-assigned: `owner` is never read off the
- * record (`ProviderRecord` deliberately carries no owner field, see
- * `provider.ts`) and is instead the `moduleId` argument the caller passed to
- * `register()`. A module can no more misreport its own identity here than
- * it can fabricate a `ProviderRecord` by hand.
+ * `owner` is the `moduleId` argument passed to `register()`, never a field
+ * read off the record, so a module cannot misreport its own identity.
  */
 export interface RegisteredProvider<T = unknown> {
   readonly record: ProviderRecord<T>;
   readonly owner: string;
 }
 
-/** One row of `inspect()`'s provider table — see `RegistrySnapshot`. */
+/** One row of `inspect()`'s provider table. */
 export interface ProviderSnapshotEntry {
   readonly tokenLabel: string;
   readonly kind: 'provide' | 'contribute';
@@ -39,21 +27,17 @@ export interface ProviderSnapshotEntry {
   readonly owner: string;
   readonly override: boolean;
   /**
-   * **C6**: set only on a row that is *not* the effective provider for its
-   * token — a plain `provide` that an `override: true` registration
-   * superseded (in either registration order). The value is the module id
-   * of the override that displaced it, recorded at the moment of
-   * displacement.
+   * The module id of the `override: true` registration that displaced this
+   * row, set only on a plain `provide` that is not the effective provider for
+   * its token.
    *
    * A row without this field is live: it is either the token's effective
-   * provider or a contribution. This is what lets a test assert that its
-   * mock displaced something real rather than silently mocking a token no
-   * module provides.
+   * provider or a contribution.
    */
   readonly overriddenBy?: string;
 }
 
-/** One row of `inspect()`'s per-module table — see `RegistrySnapshot`. */
+/** One row of `inspect()`'s per-module table. */
 export interface ModuleSnapshotEntry {
   readonly moduleId: string;
   /** Labels of every token this module provides or contributes to, sorted. */
@@ -61,19 +45,18 @@ export interface ModuleSnapshotEntry {
 }
 
 /**
- * **G3** data source: a plain, JSON-serialisable snapshot of everything the
- * registry knows. Both arrays are sorted deterministically (`providers` by
- * `tokenLabel` then `owner`; `modules` by `moduleId`) so that registering the
- * same set of modules in a different order produces byte-identical output —
- * this is what makes graph snapshot tests (dev tools, later stages) safe
- * against non-determinism instead of flaky.
+ * A JSON-serialisable snapshot of everything the registry knows.
+ *
+ * Both arrays are sorted deterministically — `providers` by `tokenLabel` then
+ * `owner`, `modules` by `moduleId` — so registering the same set of modules in
+ * a different order produces identical output.
  */
 export interface RegistrySnapshot {
   readonly providers: readonly ProviderSnapshotEntry[];
   readonly modules: readonly ModuleSnapshotEntry[];
 }
 
-/** Renders a value for an error message, matching `provider.ts`/`define-module.ts`. */
+/** Renders a value for an error message: `string 'x'`, `number`, `null`, … */
 function describeValue(value: unknown): string {
   if (value === null) {
     return 'null';
@@ -87,13 +70,13 @@ function describeValue(value: unknown): string {
   return typeof value;
 }
 
-/** A single planned action from pass 1 of `register()` — see the comment there. */
+/** One validated action from `register()`'s first pass, applied in its second. */
 type PlannedAction =
   | { readonly kind: 'provide'; readonly token: AnyToken; readonly entry: RegisteredProvider }
   | { readonly kind: 'contribute'; readonly token: AnyToken; readonly entry: RegisteredProvider }
   | {
-      // C6/#37: a plain `provide` that an `override: true` registration
-      // already holds the slot for. Recorded, never effective, never fatal.
+      // A plain `provide` for a token an `override: true` registration already
+      // holds: recorded, never effective, never fatal.
       readonly kind: 'superseded';
       readonly token: AnyToken;
       readonly entry: RegisteredProvider;
@@ -107,85 +90,69 @@ interface SupersededProvider {
 }
 
 /**
- * Shared, frozen "no contributions" sentinel. Returned by `getContributions`
- * for a token that has never had one, instead of allocating a fresh `[]`
- * per call — same reasoning as the copy-on-write below: a stable reference
- * across repeated calls is what lets a caller's identity-based
- * change-detection treat "still nothing" as "unchanged".
+ * Shared, frozen "no contributions" result.
+ *
+ * Returned by `getContributions` for a token that has never had one, so that
+ * repeated calls observing no change return the same object and a caller's
+ * identity comparison reads "unchanged".
  */
 const EMPTY_CONTRIBUTIONS: readonly RegisteredProvider[] = Object.freeze([]);
 
+/**
+ * The store of provider and contribution records, keyed by token and attributed
+ * to an owning module.
+ *
+ * Enforces every registration-time rule. Nothing here constructs instances.
+ */
 export class ProviderRegistry {
-  /**
-   * `provide`d tokens: at most one `RegisteredProvider` per token. Keyed by
-   * `AnyToken` (ADR-10) — `Token<T>` is invariant in `T`, so a single `Map`
-   * cannot be keyed by `Token<unknown>` and still accept the differently-typed
-   * tokens real providers use; `AnyToken` is the erased form built for
-   * exactly this "heterogeneous collection" case. `Token<T>` is directly
-   * assignable to `AnyToken` for any `T` (unlike `Token<unknown>`), so no
-   * cast is needed when a caller's concretely-typed token is stored or
-   * looked up here — see `getProvider`/`hasToken`/`ownerOf` below.
-   */
+  /** `provide`d tokens: at most one `RegisteredProvider` per token. */
   private readonly providers = new Map<AnyToken, RegisteredProvider>();
   /**
-   * `contribute`d tokens: an ordered, **frozen** list of `RegisteredProvider`
-   * per token. Every array stored here is replaced wholesale (copy-on-write)
-   * rather than mutated in place — see the comment in `register()`'s commit
-   * pass — so a reference to one of these arrays, once handed out by
-   * `getContributions`, is safe to cache and compare by identity.
+   * `contribute`d tokens: an ordered, frozen list per token.
+   *
+   * Every array stored here is replaced wholesale rather than mutated, so a
+   * reference handed out by `getContributions` is safe to cache and compare by
+   * identity.
    */
   private readonly contributions = new Map<AnyToken, readonly RegisteredProvider[]>();
   /**
-   * **C6/#37**: plain `provide` registrations that an `override: true`
-   * registration superseded, keyed by token. Purely diagnostic — nothing
-   * here is ever resolvable, `getProvider`/`hasToken`/`ownerOf` never
-   * consult it — and it exists so `inspect()` can show that an override
-   * displaced a real provider (`overriddenBy`) instead of the displacement
-   * being invisible.
+   * Plain `provide` registrations an `override: true` registration superseded,
+   * keyed by token.
    *
-   * A superseded entry is dropped when **its own owner** withdraws, not
-   * when the winning override does: it is a record of what that module
-   * registered, and the module is still registered. A withdrawn override
-   * therefore does *not* promote the superseded record back into the
-   * provider slot — provider resurrection has no basis in the spec, and the
-   * pre-existing plain-then-override order never did it either.
+   * Purely diagnostic: `getProvider`, `hasToken` and `ownerOf` never consult it,
+   * and nothing here is resolvable. A superseded entry is dropped when its own
+   * owner withdraws, not when the winning override does, and withdrawing the
+   * override never promotes it back into the provider slot.
    */
   private readonly superseded = new Map<AnyToken, SupersededProvider[]>();
   /** Every token (provided or contributed) a module currently owns — drives `withdraw` and `inspect`. */
   private readonly moduleTokens = new Map<string, Set<AnyToken>>();
   /**
-   * Module ids currently registered. Tracked separately from `moduleTokens`
-   * so a module registered with zero records (a legal, if unusual,
-   * descriptor with no `providers`) still counts as registered for the
-   * idempotence check below.
+   * Module ids currently registered.
+   *
+   * Tracked separately from `moduleTokens` so that a module registered with
+   * zero records still counts as registered.
    */
   private readonly registeredModules = new Set<string>();
   /** Populated by `setKnownModules` — backs `findModuleByTokenLabelPrefix`. */
   private knownModules = new Set<string>();
 
   /**
-   * Records every provider/contribution in `records` as owned by
-   * `moduleId` (C9 — `moduleId` is the *only* source of provenance; nothing
-   * on a `ProviderRecord` is consulted for it).
+   * Records every provider and contribution in `records` as owned by `moduleId`.
    *
-   * Registration is atomic: `records` is validated in a first pass against
-   * both the registry's existing state and the records already accepted
-   * earlier in this same call (so a module conflicting with itself inside
-   * one `records` array is caught too), and nothing is written to the
-   * registry's state until every record in the batch has passed. This
-   * matters for HMR: without it, a batch that fails on its third record
-   * would leave the first two silently registered, corrupting the registry
-   * for the retry that follows.
+   * Registration is atomic: `records` is validated against both the existing
+   * registry state and the records accepted earlier in the same call, and
+   * nothing is written until every record has passed. A failing batch therefore
+   * leaves the registry untouched and can be retried.
    *
    * @throws {InvalidDescriptorError} for a malformed `moduleId` or `records`.
-   * @throws {DuplicateRegistrationError} if `moduleId` is already registered
-   *   (call `withdraw(moduleId)` first — e.g. before an HMR re-activation).
-   * @throws {DuplicateProviderError} (C6) for a second plain `provide()` of
-   *   a token another plain `provide()` already holds. A plain `provide()`
-   *   for a token an `override: true` registration holds is **not** an
-   *   error (#37): it is recorded as superseded and ignored.
-   * @throws {ProviderKindConflictError} (C5) for a `provide()`/`contribute()`
-   *   of a token the registry already holds under the other kind.
+   * @throws {DuplicateRegistrationError} if `moduleId` is already registered;
+   *   call `withdraw(moduleId)` first.
+   * @throws {DuplicateProviderError} for a second plain `provide()` of a token
+   *   another plain `provide()` already holds. A plain `provide()` for a token
+   *   an `override: true` registration holds is recorded as superseded instead.
+   * @throws {ProviderKindConflictError} for a `provide()` or `contribute()` of a
+   *   token the registry already holds under the other kind.
    */
   register(moduleId: string, records: readonly AnyProviderRecord[]): void {
     if (typeof moduleId !== 'string' || moduleId.trim().length === 0) {
@@ -203,12 +170,10 @@ export class ProviderRegistry {
       throw new DuplicateRegistrationError(moduleId);
     }
 
-    // Pass 1 — validate. `batchProviders` overlays the real `providers` map
-    // for the duration of this call so that later records in the same batch
-    // see the effect of earlier ones (e.g. a plain provide() followed by an
-    // override provide() for the same token, both in this batch, is legal
-    // and the override must win — same rule as across separate calls).
-    // `batchContributionOwners` overlays `contributions` the same way.
+    // Pass 1 — validate. `batchProviders` and `batchContributionOwners` overlay
+    // the real maps for the duration of this call, so later records in the batch
+    // see the effect of earlier ones and the outcome matches what separate
+    // `register` calls in the same order would produce.
     const batchProviders = new Map<AnyToken, RegisteredProvider>();
     const batchContributionOwners = new Map<AnyToken, string[]>();
     const plan: PlannedAction[] = [];
@@ -222,9 +187,6 @@ export class ProviderRegistry {
       ];
 
       if (record.kind === 'provide') {
-        // C5: provide() is rejected outright if the token already has any
-        // contributions — mixing kinds on one token is never allowed,
-        // override or not.
         if (contributionOwners.length > 0) {
           throw new ProviderKindConflictError(
             record.token.label,
@@ -234,28 +196,12 @@ export class ProviderRegistry {
             moduleId,
           );
         }
-        // C6: override precedence. The rule is deliberately one-sided and
-        // order-independent: a registration with `override: true` always
-        // replaces whatever is there (nothing to reject — there's nothing
-        // for `override: true` to conflict with, by definition); a
-        // registration *without* `override: true` succeeds when the slot is
-        // empty, and is **superseded** (recorded, ignored, not fatal) when
-        // the slot is held by an override. This makes the outcome
-        // independent of registration order: whichever provide() call ever
-        // set `override: true` for a token stays the effective provider —
-        // either because it replaced an earlier plain provider, or because
-        // a later plain provider yields to it here.
-        //
-        // **#37**: the loser used to throw `DuplicateProviderError`, which
-        // — providers being registered during activation — failed and
-        // quarantined the very module the override was mocking *for*
-        // (F3, R4 acceptance criterion 7). C6's actual requirement is
-        // untouched: two *plain* provides for one token are still a fatal
-        // error naming both modules, because neither of them has declared
-        // the intent that `override: true` is. Only the plain-loses-to-
-        // override case changed, from fatal to ignored, and it is
-        // symmetric with the plain-then-override order, which was never
-        // fatal.
+        // Override precedence, deliberately one-sided so the outcome does not
+        // depend on registration order: `override: true` always takes the slot,
+        // and a plain provide is superseded — recorded, ignored, not fatal —
+        // when an override already holds it. Whichever provide ever set
+        // `override: true` stays the effective provider. Two plain provides for
+        // one token remain fatal.
         if (existingProvider !== undefined && !record.override) {
           if (!existingProvider.record.override) {
             throw new DuplicateProviderError(record.token.label, existingProvider.owner, moduleId);
@@ -272,8 +218,6 @@ export class ProviderRegistry {
         batchProviders.set(token, entry);
         plan.push({ kind: 'provide', token, entry });
       } else {
-        // C5: contribute() is rejected if the token already has a single
-        // provider — the reverse direction of the check above.
         if (existingProvider !== undefined) {
           throw new ProviderKindConflictError(
             record.token.label,
@@ -291,26 +235,19 @@ export class ProviderRegistry {
       }
     }
 
-    // Pass 2 — commit. Every entry in `plan` already passed validation, so
-    // this loop cannot throw.
+    // Pass 2 — commit. Every entry in `plan` already passed validation, so this
+    // loop cannot throw.
     //
-    // Copy-on-write for contributions: build a *new* array rather than
-    // pushing into the one already stored, then replace the map entry.
-    // `getContributions` hands its return value out by reference (see
-    // below), and task 2.3's reactive collections need to tell "unchanged"
-    // from "changed" by comparing the reference they cached last time
-    // against the one they get now. Mutating the stored array in place
-    // would make every such comparison see the *same* object — reporting
-    // "unchanged" even immediately after an addition — and silently break
-    // C5 reactivity with no failing test. `withdraw` (below) already builds
-    // a fresh array via `.filter`, so only this push-based path needed the
-    // fix; the asymmetry between them is intentional, not an oversight.
+    // Contributions are copy-on-write: a new array replaces the stored one
+    // rather than being pushed into. `getContributions` hands its return value
+    // out by reference, and subscribers detect change by comparing that
+    // reference, so an in-place push would report "unchanged" after a real
+    // addition.
     const ownedTokens = new Set<AnyToken>();
     for (const action of plan) {
       if (action.kind === 'provide') {
-        // C6/#37: an override taking a slot a plain provider held records
-        // the displaced entry, so both registration orders leave the same
-        // observable state — effective provider plus a superseded row.
+        // An override taking a slot a plain provider held records the displaced
+        // entry, so both registration orders leave the same observable state.
         const displaced = this.providers.get(action.token);
         if (displaced !== undefined) {
           this.addSuperseded(action.token, { entry: displaced, overriddenBy: action.entry.owner });
@@ -329,15 +266,15 @@ export class ProviderRegistry {
   }
 
   /**
-   * Removes every provider and contribution owned by `moduleId` (F3
-   * quarantine; A4 disposal cascades here too) and returns the distinct set
-   * of tokens that were affected, so the caller (task 2.3's reactive
-   * contribution collections) knows which subscribers to notify.
+   * Removes every provider and contribution owned by `moduleId`.
    *
-   * Withdrawing a module that was never registered, or was already
-   * withdrawn, is a no-op that returns an empty set — HMR and quarantine
-   * code paths call `withdraw` defensively and should not have to guard
-   * against "was this ever registered" themselves.
+   * @returns the distinct set of tokens the module owned, so the caller knows
+   *   which contribution subscribers to notify. The set over-reports: it
+   *   includes `provide`-kind tokens and contribution tokens whose effective
+   *   collection did not change.
+   *
+   * Withdrawing a module that was never registered, or was already withdrawn,
+   * is a no-op returning an empty set.
    */
   withdraw(moduleId: string): ReadonlySet<AnyToken> {
     const tokens = this.moduleTokens.get(moduleId);
@@ -351,8 +288,6 @@ export class ProviderRegistry {
         this.providers.delete(token);
       }
 
-      // C6/#37: drop this module's superseded rows — the diagnostic
-      // outlives the displacement, not the module.
       const displaced = this.superseded.get(token);
       if (displaced !== undefined) {
         const remaining = displaced.filter((row) => row.entry.owner !== moduleId);
@@ -365,11 +300,6 @@ export class ProviderRegistry {
 
       const contributors = this.contributions.get(token);
       if (contributors !== undefined) {
-        // `.filter` on a `readonly` array already returns a brand-new
-        // (mutable) array — never `contributors` itself — so this path was
-        // already copy-on-write; it only needed the same `Object.freeze` as
-        // `register()`'s commit pass for the immutability guarantee to be
-        // enforced, not just typed.
         const remaining = Object.freeze(contributors.filter((entry) => entry.owner !== moduleId));
         if (remaining.length > 0) {
           this.contributions.set(token, remaining);
@@ -384,7 +314,7 @@ export class ProviderRegistry {
     return tokens;
   }
 
-  /** Appends one superseded row (C6/#37) — see the `superseded` field. */
+  /** Appends one superseded row — see the `superseded` field. */
   private addSuperseded(token: AnyToken, row: SupersededProvider): void {
     const existing = this.superseded.get(token);
     if (existing === undefined) {
@@ -394,39 +324,21 @@ export class ProviderRegistry {
     }
   }
 
-  /**
-   * The single provider for `token`, if any. Never returns a contribution.
-   *
-   * The `as RegisteredProvider<T> | undefined` here is the one cast this
-   * class still needs, and it is a narrowing, not a widening: the `Map` is
-   * keyed and valued by the erased `AnyToken`/`RegisteredProvider` (ADR-10),
-   * so a lookup only ever hands back the erased shape; recovering the
-   * caller's own `T` (which `register()` already guaranteed matches, because
-   * a `RegisteredProvider<X>` can only ever have been stored under its own
-   * `Token<X>`) is not something the type system can verify from inside a
-   * generic method — `token: Token<T>` alone doesn't prove which concrete
-   * `RegisteredProvider` a `Map<AnyToken, RegisteredProvider>` maps it to.
-   */
+  /** The single provider for `token`, if any. Never returns a contribution. */
   getProvider<T>(token: Token<T>): RegisteredProvider<T> | undefined {
     return this.providers.get(token) as RegisteredProvider<T> | undefined;
   }
 
   /**
-   * Every contribution registered for `token`, in registration order. Empty
-   * if none.
+   * Every contribution registered for `token`, in registration order. Empty if
+   * none.
    *
-   * The returned array is frozen — enforced, not merely typed `readonly` —
-   * and is a *stable reference* for as long as the collection is unchanged,
-   * becoming a *fresh* reference the instant a contribution is added or
-   * removed (see the copy-on-write comment in `register()` and the `.filter`
-   * in `withdraw()`). That combination is deliberate: task 2.3's reactive
-   * contribution collections need a sound identity-based change signal to
-   * skip notifying when nothing actually changed.
+   * The returned array is frozen, and is a stable reference for as long as the
+   * collection is unchanged, becoming a fresh reference the instant a
+   * contribution is added or removed. Callers may use that identity as a sound
+   * change signal.
    */
   getContributions<T>(token: Token<T>): readonly RegisteredProvider<T>[] {
-    // Returns the stored array by reference (never a fresh copy here) — the
-    // stability guarantee above only holds if repeated calls that observe
-    // no change return the *same* object, not merely an equal one.
     return (this.contributions.get(token) ?? EMPTY_CONTRIBUTIONS) as readonly RegisteredProvider<T>[];
   }
 
@@ -436,24 +348,21 @@ export class ProviderRegistry {
   }
 
   /**
-   * The owning module of `token`'s single provider. Returns `undefined` both
-   * when `token` is unknown and when it is a contribution token — a
-   * contribution collection has potentially many owners, so there is no
-   * single answer "ownerOf" can give; callers that need every contributor
-   * use `getContributions` instead.
+   * The owning module of `token`'s single provider.
+   *
+   * @returns `undefined` both for an unknown token and for a contribution token,
+   *   which has potentially many owners; use `getContributions` for those.
    */
   ownerOf<T>(token: Token<T>): string | undefined {
     return this.providers.get(token)?.owner;
   }
 
   /**
-   * C8 suggestion support: given a token label such as
-   * `'payments/PaymentGateway'`, returns `'payments'` — but only if a
-   * module with that id is known to the registry (via `setKnownModules`).
-   * This is what keeps the C8 "did you forget to list it in dependsOn?"
-   * suggestion honest: a label prefix that merely *looks* like a module id
-   * (or that names a module the composition root never registered at all)
-   * must not be offered as a fix.
+   * The module id prefix of a token label such as `'payments/PaymentGateway'`,
+   * but only when a module with that id was passed to `setKnownModules`.
+   *
+   * @returns the prefix, or `undefined` if the label has no prefix or names no
+   *   known module.
    */
   findModuleByTokenLabelPrefix(label: string): string | undefined {
     const separatorIndex = label.indexOf('/');
@@ -465,23 +374,21 @@ export class ProviderRegistry {
   }
 
   /**
-   * Tells the registry the full universe of module ids the kernel knows
-   * about — registered *or* merely declared (e.g. via `dependsOn`) but not
-   * yet activated — so `findModuleByTokenLabelPrefix` can distinguish a real
-   * module id from an unrelated token label that happens to contain a `/`.
-   * Replaces the previous set; the kernel calls this once after it finishes
-   * registering descriptors, not incrementally.
+   * Replaces the set of module ids the registry treats as real when matching a
+   * token label prefix.
+   *
+   * @param ids every module id the kernel knows about, registered or merely
+   *   declared.
    */
   setKnownModules(ids: readonly string[]): void {
     this.knownModules = new Set(ids);
   }
 
   /**
-   * **G3**: a plain, deterministic snapshot of the registry's state. Sorted
-   * explicitly (see `RegistrySnapshot`) — insertion order into the
-   * underlying `Map`s depends on registration order, which callers must not
-   * be able to observe, or graph snapshot tests would flake depending on
-   * unrelated composition-root ordering.
+   * A deterministic snapshot of the registry's state.
+   *
+   * Sorted explicitly rather than in `Map` insertion order, so callers cannot
+   * observe registration order.
    */
   inspect(): RegistrySnapshot {
     const providerRows: ProviderSnapshotEntry[] = [];
@@ -494,9 +401,6 @@ export class ProviderRegistry {
         override: provided.record.override,
       });
     }
-    // C6/#37: superseded plain provides, each naming the override that
-    // displaced it. Never resolvable; visible so a test can prove the
-    // override displaced a real provider.
     for (const displaced of this.superseded.values()) {
       for (const row of displaced) {
         providerRows.push({
@@ -524,8 +428,8 @@ export class ProviderRegistry {
       (a, b) =>
         a.tokenLabel.localeCompare(b.tokenLabel) ||
         a.owner.localeCompare(b.owner) ||
-        // Effective rows before superseded ones, so a token with both is
-        // still deterministically ordered.
+        // Effective rows before superseded ones, so a token with both is still
+        // deterministically ordered.
         Number(a.overriddenBy !== undefined) - Number(b.overriddenBy !== undefined),
     );
 
