@@ -41,6 +41,24 @@ export default defineConfig({
         },
       },
       {
+        // create-module generator tests (stage 7, task 7.2).
+        //
+        // Two include globs, and the second one is the point. `src/**` is the
+        // generator's own suite; `__fixtures__/**` is the checked-in golden
+        // tree, whose `module.test.ts` is *the emitted test itself*. Running
+        // it here is the only way this repo can honestly claim "the emitted
+        // package's test passes" — a test that merely diffs the emitted text
+        // against a fixture proves the generator is deterministic, not that
+        // what it emits works.
+        test: {
+          name: 'create-module',
+          root: './packages/create-module',
+          environment: 'node',
+          include: ['src/**/*.test.ts', '__fixtures__/**/*.test.ts'],
+          globals: true,
+        },
+      },
+      {
         // @ng-react/eslint-config-modules rule tests (stage 7, task 7.1).
         // node env: these are ESLint RuleTester suites, no DOM involved.
         // `globals: true` is load-bearing here, not cosmetic: RuleTester

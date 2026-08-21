@@ -1,0 +1,17 @@
+// Forwards the workspace's shared compiler options to the golden fixture.
+//
+// `__fixtures__/demo-thing/` is a byte-for-byte copy of what the generator
+// emits, and what it emits is a package that lives at `packages/<id>/` — so
+// its `tsconfig.json` says `"extends": "../../tsconfig.base.json"`. The
+// fixture sits two levels below *this* directory instead, so that relative
+// path lands here. Editing the fixture's own extends path to suit its
+// checked-in location would make the golden file stop being a copy of the
+// emitted bytes, which is the one property it exists to have.
+//
+// Vite's TS transform (and therefore the `create-module` vitest project,
+// which runs the fixture's `module.test.ts` as a real test) resolves this at
+// load time; `tsc` reaches the fixture through this package's own
+// `tsconfig.json` and never reads this file.
+{
+  "extends": "../../tsconfig.base.json"
+}

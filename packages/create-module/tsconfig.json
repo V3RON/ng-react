@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "allowJs": true,
+    "checkJs": true,
+    "types": ["node", "vitest/globals"]
+  },
+  // `templates/` is deliberately absent: template files carry `__id__`-style
+  // placeholders in *type* positions (`load: '__load__'`, `dependsOn:
+  // [__dependsOn__]`) and therefore cannot type-check as written. They are
+  // still real files and are still linted by the root `eslint .` — see the
+  // package README section in the PR body for how each of the three root
+  // tools sees `templates/` and `__fixtures__/`. `__fixtures__/` *is*
+  // included: the checked-in golden tree is a byte-for-byte copy of what the
+  // generator emits, so type-checking it type-checks the emitted output.
+  "include": ["src/**/*", "bin/**/*", "__fixtures__/**/*"],
+  "exclude": ["node_modules"]
+}
