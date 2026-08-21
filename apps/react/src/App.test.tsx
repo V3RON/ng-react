@@ -213,7 +213,7 @@ describe('demo app', () => {
     // navigation module has no privileges, and that includes no exemption
     // from H2. `shell` is absent because it is app source rather than a
     // module package; see the note in `composition-root.ts`.
-    expect(armed).toEqual(['auth', 'debug', 'payments', 'orders', 'nav']);
+    expect(armed).toEqual(['auth', 'debug', 'payments', 'orders', 'nav', 'dashboard']);
 
     // Armed with the *kernel*, not merely armed: firing a module's callback
     // with a replacement descriptor has to reach `kernel.hotReplace`. A root

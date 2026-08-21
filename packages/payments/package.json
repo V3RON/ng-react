@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@app/auth": "workspace:*",
+    "@app/dashboard": "workspace:*",
     "@app/nav": "workspace:*",
     "@ng-react/kernel": "workspace:*",
     "react": "^19.2.8"

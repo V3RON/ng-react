@@ -1,7 +1,12 @@
-// `@app/payments` — the module's screen (spec §12 **R2**).
+// `@app/payments` — the module's React components, **web implementation**
+// (spec §12 **R2**).
 //
-// Implementation: unreachable from outside the package (spec §4); it reaches
-// the navigator only as a `RouteConfig.component` this module contributes.
+// Implementation: unreachable from outside the package (spec §4); each
+// component below reaches its surface only as the `component` field of a
+// contribution this module makes.
+//
+// **`.web.tsx`, and `providers.ts` imports `./screen`** — issue #52 §3's
+// platform decision, written up once in `packages/dashboard/src/screen.web.tsx`.
 //
 // **This screen is what acceptance criterion 4 watches.** It resolves the
 // gateway behind `payments`' `singleton`-scoped provider through `useService`,
@@ -46,5 +51,23 @@ export function PaymentsScreen(): ReactElement {
         Authorize the demo basket
       </button>
     </section>
+  );
+}
+
+/**
+ * **The module's dashboard card** — pending drafts, deliberately.
+ *
+ * The draft store is `payments`' `persistent: true` provider (**H3**, **H4**),
+ * so this card is where an HMR edit is *visible*: the count survives an edit
+ * to any file in this module and returns to its seeded value only on a real
+ * `kernel.deactivate`. A card showing a value that was recomputed on every
+ * render would demonstrate nothing.
+ */
+export function PaymentsCard(): ReactElement {
+  const drafts = useService(PaymentDraftStoreToken);
+  return (
+    <p data-testid="payments-card" data-platform="web">
+      {String(drafts.getState().length)} pending draft(s) — persistent: true
+    </p>
   );
 }

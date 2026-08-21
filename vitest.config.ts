@@ -1,6 +1,26 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
+/**
+ * **The Vitest half of issue #52 §3's platform decision** — see
+ * `packages/dashboard/src/screen.web.tsx` for the decision itself.
+ *
+ * A module that owns a component writes `screen.web.tsx` and
+ * `screen.native.tsx` and imports `./screen`; this is what makes the *web*
+ * file the one every test in this workspace runs against. It is stated here
+ * as well as in `apps/react/vite.config.ts` because **Vitest does not read the
+ * app's Vite config**, and per project because a `projects` entry is its own
+ * config rather than an override of this file's root options — a root
+ * `resolve` here would be silently ignored by every project below, which is
+ * exactly the shape of a check that passes while doing nothing.
+ *
+ * The tail of the list is Vite's default, restated because `extensions`
+ * replaces the default rather than extending it.
+ */
+const platformResolve = {
+  extensions: ['.web.tsx', '.web.ts', '.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'],
+};
+
 export default defineConfig({
   test: {
     // Projects legitimately start empty and fill in stage by stage.
@@ -32,6 +52,7 @@ export default defineConfig({
       },
       {
         plugins: [react()],
+        resolve: platformResolve,
         test: {
           name: 'demo',
           root: './apps/react',
@@ -56,6 +77,7 @@ export default defineConfig({
         //
         // node env, no React: these are `createTestKernel` suites, and
         // acceptance criterion 7 requires them to run with no renderer.
+        resolve: platformResolve,
         test: {
           name: 'app-modules',
           root: './packages',

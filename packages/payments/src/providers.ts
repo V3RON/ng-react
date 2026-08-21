@@ -6,15 +6,21 @@
 import { contribute, defineStore, MODULE_ID, provide, recordEvaluation } from '@ng-react/kernel';
 import type { AnyProviderRecord, Store } from '@ng-react/kernel';
 import { DiagnosticPanelToken } from '@app/auth/contract';
-import { RouteConfigToken } from '@app/nav/contract';
+import { DashboardCardToken } from '@app/dashboard/contract';
+import { MenuEntryToken, RouteConfigToken } from '@app/nav/contract';
 import { PaymentDraftStoreToken, PaymentGatewayToken } from './contract';
 import type { Authorization, Money, PaymentDraft, PaymentGateway } from './contract';
-import { PaymentsScreen } from './screen';
+// **Extensionless on purpose** — the bundler and `tsc` pick `screen.web.tsx`
+// or `screen.native.tsx`. Issue #52 §3; see `packages/dashboard/src/screen.web.tsx`.
+import { PaymentsCard, PaymentsScreen } from './screen';
 
 // **Acceptance criterion 9** — proves this file was not evaluated before the
 // activation trigger. `payments` is lazy, so the trigger is `orders`
 // activating and pulling it in transitively (**A1**).
 recordEvaluation('payments', 'payments/providers.ts');
+
+/** This module's own route, named once and used by the route and the menu entry. */
+const PAYMENTS_PATH = '/payments/drafts';
 
 function createPaymentGateway(owner: string, drafts: Store<readonly PaymentDraft[]>): PaymentGateway {
   let sequence = 0;
@@ -90,6 +96,28 @@ export const providers: AnyProviderRecord[] = [
   // in `@app/orders`' providers for why a lazy module cannot contribute the
   // route that activates it.
   contribute(RouteConfigToken, {
-    factory: () => ({ path: '/payments/drafts', component: PaymentsScreen }),
+    factory: () => ({ path: PAYMENTS_PATH, component: PaymentsScreen }),
+  }),
+
+  // **C5 — the menu entry.** Registered when `payments` activates, which in
+  // the demo happens *transitively* (**A1**): nothing ever calls
+  // `kernel.activate(PaymentsModule)`, so this row appearing in the hamburger
+  // is itself evidence that activating `orders` pulled this module up. `order`
+  // deliberately sits below `orders`' entry — see `MenuEntry.order` for why a
+  // human-readable surface cannot take its order from the module graph.
+  contribute(MenuEntryToken, {
+    factory: () => ({ id: 'payments/drafts', title: 'Payments', path: PAYMENTS_PATH, order: 20 }),
+  }),
+
+  // **C5 — the dashboard card**, showing the `persistent: true` draft store,
+  // which is what makes an HMR edit visible on the dashboard rather than
+  // merely survivable.
+  contribute(DashboardCardToken, {
+    factory: () => ({
+      id: 'payments/drafts',
+      title: 'Pending drafts',
+      order: 20,
+      component: PaymentsCard,
+    }),
   }),
 ];

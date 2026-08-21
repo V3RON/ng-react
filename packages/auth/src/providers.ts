@@ -13,6 +13,7 @@ import {
   recordEvaluation,
 } from '@ng-react/kernel';
 import type { AnyProviderRecord, ErrorInfo, Store, Unsubscribe } from '@ng-react/kernel';
+import { MenuEntryToken } from '@app/nav/contract';
 import { AuthErrorLogToken, DiagnosticPanelToken, SessionServiceToken } from './contract';
 import type { AuthErrorEntry, Session, SessionService } from './contract';
 
@@ -133,5 +134,25 @@ export const providers: AnyProviderRecord[] = [
         return current === undefined ? 'signed out' : `signed in as ${current.userId}`;
       },
     }),
+  }),
+
+  // **C5 — a menu entry and nothing else.**
+  //
+  // `auth` is the demo's **eager, critical** module, so this row is the one
+  // that is in the hamburger from the first paint: it needs no activation
+  // trigger, and it is still there after every lazy module has been disposed
+  // by logout — until logout disposes `auth` itself, at which point it goes
+  // too. A menu whose *only* rows came from lazy modules would be empty at
+  // startup and would prove nothing about the collection being live.
+  //
+  // **It points at a path this module does not own**, and that is deliberate
+  // rather than an oversight: `MenuEntry.path` names a `RouteConfig.path`,
+  // and nothing requires the two to come from the same module. `/` is the
+  // shell's home route (`apps/react/src/shell/routes.tsx`), which is active
+  // for the app's whole life — so this entry can never dangle. `auth`
+  // contributes no route of its own because it has no screen; issue #52 asks
+  // for "a menu entry only" and this is what that costs.
+  contribute(MenuEntryToken, {
+    factory: () => ({ id: 'auth/home', title: 'Home', path: '/', order: 0 }),
   }),
 ];
