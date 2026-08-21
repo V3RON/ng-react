@@ -305,3 +305,132 @@ export class DisposeTimeoutError extends KernelError {
     this.name = 'DisposeTimeoutError';
   }
 }
+
+/**
+ * A3: a module's activation did not complete within `initTimeoutMs`
+ * (default 10 s, configurable per kernel).
+ *
+ * The timeout covers **both** halves of activation's evaluation phase — the
+ * `providers` thunk and `init(ctx)` — because from the outside they are one
+ * indivisible "not ready yet" window, and a slow `import()` behind a
+ * provider thunk hangs startup exactly as thoroughly as a slow `init`.
+ * Dependency activation is *not* covered: each dependency runs under its
+ * own timeout, so a chain of ten modules cannot exhaust one budget and
+ * blame the last one.
+ *
+ * The module transitions to `failed` and stays there. If the underlying
+ * `init` later resolves, that result is discarded — a timed-out module is
+ * never resurrected; `kernel.retry()` (F3, task 3.3) is the only way back.
+ */
+export class ActivationTimeoutError extends KernelError {
+  constructor(moduleId: string, timeoutMs: number) {
+    super(
+      'KERNEL_ACTIVATION_TIMEOUT',
+      `Activating module '${moduleId}' did not complete within ${timeoutMs}ms. The timeout covers the ` +
+        `providers thunk and init(ctx). Raise it with createKernel({ initTimeoutMs }), or move the slow ` +
+        `work out of init() and into the service that needs it.`,
+      { moduleId },
+    );
+    this.name = 'ActivationTimeoutError';
+  }
+}
+
+/**
+ * F1: a module's own activation code threw — either its `providers` thunk
+ * or its `init(ctx)`. The original error is attached as `cause`, so the
+ * chain a module author reads starts at the module id and ends at their own
+ * stack frame.
+ *
+ * Errors raised by the *container* while registering the returned records
+ * (C6 duplicate provider, C5 kind conflict) are deliberately **not** wrapped
+ * in this: they already name both modules and the token, and burying a
+ * spec-quoted message one `cause` deeper makes it worse, not better.
+ */
+export class ModuleActivationError extends KernelError {
+  /** Which half of the evaluation phase threw. */
+  readonly phase: 'providers' | 'init';
+
+  constructor(moduleId: string, phase: 'providers' | 'init', cause: unknown) {
+    super(
+      'KERNEL_ACTIVATION_FAILED',
+      `Activating module '${moduleId}' failed in its ` +
+        `${phase === 'providers' ? 'providers thunk' : 'init(ctx)'}: ${messageOf(cause)}`,
+      { moduleId, cause },
+    );
+    this.name = 'ModuleActivationError';
+    this.phase = phase;
+  }
+}
+
+/**
+ * F3: a module could not activate because one of its `dependsOn` modules
+ * failed to activate. The message names the failed dependency — the module
+ * that quarantine (task 3.3) will withdraw — and the dependency's own error
+ * is the `cause`, so the chain reads dependent → dependency → root cause.
+ */
+export class DependencyActivationError extends KernelError {
+  /** The dependency whose activation failed. */
+  readonly dependencyId: string;
+
+  constructor(moduleId: string, dependencyId: string, cause: unknown) {
+    super(
+      'KERNEL_DEPENDENCY_ACTIVATION_FAILED',
+      `Module '${moduleId}' cannot activate: its dependency '${dependencyId}' failed to activate. ` +
+        `Fix '${dependencyId}' and call kernel.retry() for it, or remove it from '${moduleId}'s dependsOn.`,
+      { moduleId, cause },
+    );
+    this.name = 'DependencyActivationError';
+    this.dependencyId = dependencyId;
+  }
+}
+
+/**
+ * ADR-1: a module's optional `dispose(ctx)` handler returned a promise that
+ * did not settle within `disposeTimeoutMs` (default 2 s).
+ *
+ * The container raises `DisposeTimeoutError` for the same situation one
+ * level down, per *instance*; this one is the module-level handler, which
+ * has a module id but no token. Both are reported and neither aborts the
+ * rest of the teardown (L3).
+ */
+export class ModuleDisposeTimeoutError extends KernelError {
+  constructor(moduleId: string, timeoutMs: number) {
+    super(
+      'KERNEL_MODULE_DISPOSE_TIMEOUT',
+      `dispose(ctx) for module '${moduleId}' did not complete within ${timeoutMs}ms. The module is marked ` +
+        `disposed regardless; the dispose call may still be running in the background.`,
+      { moduleId },
+    );
+    this.name = 'ModuleDisposeTimeoutError';
+  }
+}
+
+/**
+ * L2: `ctx.on(emitter, event, handler)` was handed something that is not
+ * subscribe-shaped in any of the four supported ways.
+ *
+ * `ctx.on` duck-types deliberately: spec §8 L2 requires it to work against
+ * the spec 02 event bus *without the bus being special-cased*, so there is
+ * no interface to implement and no registry of blessed emitters — which
+ * makes a precise error the only thing between a caller and a silently
+ * missing subscription. The message therefore names what was passed *and*
+ * enumerates every shape that would have worked (principle 6).
+ */
+export class UnsupportedEmitterError extends KernelError {
+  constructor(moduleId: string, event: string, detail: string) {
+    super(
+      'KERNEL_UNSUPPORTED_EMITTER',
+      `ctx.on('${event}') in module '${moduleId}': ${detail}. Supported emitter shapes are ` +
+        `on(event, handler)/off(event, handler), addListener(event, handler)/removeListener(event, handler), ` +
+        `addEventListener(event, handler)/removeEventListener(event, handler), or a subscribe function ` +
+        `(event, handler) => unsubscribe.`,
+      { moduleId },
+    );
+    this.name = 'UnsupportedEmitterError';
+  }
+}
+
+/** Best-effort message extraction for a `cause` of unknown type. */
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
