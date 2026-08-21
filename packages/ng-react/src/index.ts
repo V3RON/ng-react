@@ -13,6 +13,9 @@ export type {
   Unsubscribe,
   EventEmitterLike,
   ModuleContext,
+  ErrorPhase,
+  ErrorInfo,
+  ErrorSink,
 } from './types';
 
 // errors.ts — the KernelError hierarchy.
@@ -61,3 +64,8 @@ export { defineModule } from './define-module';
 // `ReturnType<Kernel['inspect']>`.
 export type { Kernel, KernelOptions } from './kernel/kernel';
 export { createKernel } from './kernel/kernel';
+
+// kernel/failure.ts — the failure policy (F1-F4). Only the token is public:
+// `ErrorSink`/`ErrorInfo` are types above, and the router that delivers to
+// the sinks is the kernel's business, not a consumer's.
+export { ErrorSinkToken } from './kernel/failure';

@@ -452,7 +452,10 @@ describe('ContributionCollections', () => {
       expect(before).toHaveBeenCalledTimes(1);
       expect(after).toHaveBeenCalledTimes(1);
       expect(onError).toHaveBeenCalledTimes(1);
-      expect(onError).toHaveBeenCalledWith(boom);
+      // F4 (task 3.3): the second argument is the attribution the kernel
+      // turns into an `ErrorInfo`. No `moduleId`: a subscriber belongs to
+      // whoever registered it, which is often not a module at all.
+      expect(onError).toHaveBeenCalledWith(boom, { phase: 'resolve' });
     });
 
     it('C5: a throwing contribution factory aborts only that token, reaches onError, and the change is redelivered on the next mutation', () => {

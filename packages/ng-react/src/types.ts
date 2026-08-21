@@ -25,6 +25,71 @@ export interface Disposable {
 export type Unsubscribe = () => void;
 
 /**
+ * F4: which part of a module's life produced an error the kernel routed to
+ * the error sinks.
+ *
+ *  - `activate` — the module's activation failed as a whole (F1): its
+ *    `providers` thunk threw, `init` threw or timed out, or a dependency
+ *    was quarantined.
+ *  - `init` — an error that escaped `init(ctx)` *after* activation had
+ *    already been decided, i.e. a late rejection from an `init` the kernel
+ *    stopped waiting for (A3).
+ *  - `dispose` — a `dispose(ctx)` handler, or a provider instance's
+ *    `dispose()`/`onDispose`, that threw or overran ADR-1's timeout.
+ *  - `cleanup` — a cleanup registered via `ctx.effect`/`ctx.on` threw (L3).
+ *  - `resolve` — a contribution factory or a `subscribeAll` subscriber
+ *    threw during a C5 notification pass.
+ */
+export type ErrorPhase = 'activate' | 'init' | 'dispose' | 'cleanup' | 'resolve';
+
+/**
+ * F4: the kernel-assigned attribution handed to every error sink alongside
+ * the error.
+ *
+ * **C9**: `moduleId` is derived by the kernel from the module it was acting
+ * for, never self-reported by the code that failed. It is ADR-2's reserved
+ * `'app'` when no single module owns the error — a `subscribeAll` callback
+ * registered by the composition root, for instance.
+ */
+export interface ErrorInfo {
+  readonly moduleId: string;
+  readonly phase: ErrorPhase;
+}
+
+/**
+ * F4: a module's error reporter. Modules `contribute(ErrorSinkToken, …)`
+ * and the kernel calls `report` on **every** contributed sink, in C5
+ * topological order, for each lifecycle, cleanup, resolution and activation
+ * error it handles.
+ *
+ * A sink must not throw; one that does is isolated (the remaining sinks
+ * still receive the report) and its own error is **not** routed back
+ * through the sinks. It must also not assume it is the only sink, and it
+ * must be cheap: it runs on paths that are already failing.
+ */
+export interface ErrorSink {
+  report(error: unknown, info: ErrorInfo): void;
+}
+
+/**
+ * F4 seam: how `src/container/` hands the kernel an error it is not allowed
+ * to throw (L3 disposal errors, C5 notification errors).
+ *
+ * `moduleId` is optional here and required on `ErrorInfo` on purpose: the
+ * container knows the owner of a provider instance it is disposing, but not
+ * of a subscriber callback or of one contribution among many in a
+ * collection it was constructing. Rather than invent an attribution, it
+ * omits it and the kernel substitutes ADR-2's `'app'` — provenance stays
+ * kernel-assigned (C9) in both directions.
+ *
+ * Internal: deliberately not exported from `index.ts`.
+ */
+export type ErrorReporter = (
+  error: unknown,
+  info: { readonly moduleId?: string; readonly phase: ErrorPhase },
+) => void;
+
+/**
  * Every emitter shape `ctx.on` (L2) accepts: a subscribe/unsubscribe pair
  * keyed by event name, under any of the three conventional method-name
  * pairs, or a bare subscribe function that returns its own unsubscribe.
