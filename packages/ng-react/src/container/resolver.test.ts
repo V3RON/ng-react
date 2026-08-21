@@ -185,7 +185,7 @@ describe('Resolver', () => {
   });
 
   describe('allOf()', () => {
-    it('resolves every contribution to the token (task 2.3 owns final ordering)', () => {
+    it('C5: resolves every contribution to the token, in the order collections.ts defines (one shared ordering path)', () => {
       const registry = makeRegistry();
       const sinkToken = createToken<AnalyticsSink>('analytics/Sink');
       const aggregatorToken = createToken<readonly AnalyticsSink[]>('analytics/AllSinks');
