@@ -216,7 +216,7 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
   }
   if (persistent && scope === 'transient') {
     throw new InvalidDescriptorError(
-      `${kind}(${label}): persistent is not allowed on a 'transient' provider (ADR-3) — there is no instance ` +
+      `${kind}(${label}): persistent is not allowed on a 'transient' provider — there is no instance ` +
         `for the container to carry across HMR re-activation. Use 'singleton' or 'module' scope instead.`,
     );
   }
@@ -229,7 +229,7 @@ function buildProviderRecord<T, D extends readonly unknown[]>(
     }
     if (!persistent) {
       throw new InvalidDescriptorError(
-        `${kind}(${label}): transfer requires persistent: true (ADR-3) — without persistent, there is no ` +
+        `${kind}(${label}): transfer requires persistent: true — without persistent, there is no ` +
           `snapshot transfer for it to customize. Add persistent: true, or remove transfer.`,
       );
     }

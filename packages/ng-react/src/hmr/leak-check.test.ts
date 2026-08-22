@@ -120,15 +120,14 @@ describe('LeakInvariantCheck — H7, the rule', () => {
       expect(entry?.moduleId).toBe('orders');
       const violation = entry?.error;
       expect(violation).toBeInstanceOf(LeakInvariantViolation);
-      expect((violation as LeakInvariantViolation).code).toBe('KERNEL_H7_LEAK');
+      expect((violation as LeakInvariantViolation).code).toBe('KERNEL_LEAK_DETECTED');
       expect((violation as LeakInvariantViolation).moduleId).toBe('orders');
       expect((violation as LeakInvariantViolation).message).toBe(
-        "HMR leak check (H7): module 'orders' leaked 1 ctx.effect registration across a hot replace. " +
-          'They were still outstanding after the module was disposed, so every further edit accumulates ' +
-          'that many more (before the edit: 3, outstanding after disposal: 1, after re-activation: 4). ' +
-          "A module's teardown must release everything it registered: subscribe through ctx.on/ctx.effect " +
-          'so L3 can clean up, and make sure a dispose(ctx) handler does not register anything new — ' +
-          'cleanups have already run by the time it is called.',
+        "Hot replace leaked 1 ctx.effect registration from module 'orders'. " +
+          'The registration remained after the module was disposed, so future edits will accumulate more ' +
+          '(before the edit: 3, outstanding after disposal: 1, after re-activation: 4). ' +
+          'Release every registration during teardown: use ctx.on/ctx.effect for subscriptions and effects, ' +
+          'and do not register new work in dispose(ctx), which runs after cleanups.',
       );
       // H7: "violations log a leak warning".
       expect(warn).toHaveBeenCalledTimes(1);
@@ -468,7 +467,7 @@ describe('H7 — the post-HMR-cycle invariant, end to end', () => {
         .filter((entry) => entry.error instanceof LeakInvariantViolation)
         .at(-1)?.error as LeakInvariantViolation;
       expect(second.outstanding).toBe(2);
-      expect(second.message).toContain("module 'leaky' leaked 2 ctx.effect registrations");
+      expect(second.message).toContain("leaked 2 ctx.effect registrations from module 'leaky'");
 
       await kernel.dispose();
     } finally {

@@ -227,7 +227,7 @@ class InstrumentedContext implements ModuleContext {
 
 /**
  * Wraps `ctx` so that `effect` and `on` registrations are counted, and
- * released when their L3 cleanups run. See `InstrumentedContext`.
+ * released when their registered cleanups run. See `InstrumentedContext`.
  */
 export function instrumentContext(ctx: ModuleContext, counters: LeakCounters): ModuleContext {
   return new InstrumentedContext(ctx, counters);

@@ -88,7 +88,7 @@ describe('<AppKernel> and useKernel (R1)', () => {
     expect(screen.getByTestId('same').textContent).toBe('true');
   });
 
-  it('R1: nesting <AppKernel> throws, naming the rule and createTestKernel', async () => {
+  it('R1: nesting <AppKernel> explains the conflict and how to isolate a test kernel', async () => {
     const kernel = await startKernel();
     silenceReactErrorLogging();
 
@@ -101,10 +101,10 @@ describe('<AppKernel> and useKernel (R1)', () => {
         </Tree>,
       ),
     ).toThrow(
-      'Nested <AppKernel>: there is exactly one kernel per app (R1). ' +
-        'Remove the inner <AppKernel> and let the subtree read the outer one with useKernel(). ' +
-        'If you need a second, isolated kernel — in a test — build it with createTestKernel() ' +
-        'and render it as the only <AppKernel> of that tree (R4).',
+      'Cannot render <AppKernel> inside another <AppKernel>: an app can have only one kernel. ' +
+        'Remove the inner <AppKernel> and use useKernel() to access the existing kernel. ' +
+        'For an isolated test kernel, create it with createTestKernel() and render it as the only ' +
+        '<AppKernel> in that tree.',
     );
   });
 
@@ -142,9 +142,9 @@ describe('<AppKernel> and useKernel (R1)', () => {
         </StrictMode>,
       ),
     ).toThrow(
-      'useKernel() was called outside <AppKernel> (R1). ' +
-        'Wrap the tree in <AppKernel kernel={kernel}> at the composition root, ' +
-        'or, in a test, in <AppKernel kernel={createTestKernel({ modules: [...] })}>.',
+      'useKernel() requires an enclosing <AppKernel>. ' +
+        'Wrap the composition root in <AppKernel kernel={kernel}>. ' +
+        'In a test, render with <AppKernel kernel={createTestKernel({ modules: [...] })}>.',
     );
   });
 
@@ -161,7 +161,7 @@ describe('<AppKernel> and useKernel (R1)', () => {
           <Orphan />
         </StrictMode>,
       ),
-    ).toThrow(/^useService\(\) was called outside <AppKernel> \(R1\)\./);
+    ).toThrow(/^useService\(\) requires an enclosing <AppKernel>\./);
   });
 });
 

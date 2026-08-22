@@ -35,7 +35,7 @@ const KIND_NOUNS: Readonly<Record<LeakKind, readonly [string, string]>> = {
  * The violation a hot replace's leak check reports.
  *
  * Routed to the error sinks and logged, never thrown. An error sink singles
- * it out with `error.code === 'KERNEL_H7_LEAK'`.
+ * it out with `error.code === 'KERNEL_LEAK_DETECTED'`.
  */
 export class LeakInvariantViolation extends KernelError {
   /** The module the leaked registrations belong to. */
@@ -55,15 +55,14 @@ export class LeakInvariantViolation extends KernelError {
     const [singular, plural] = KIND_NOUNS[options.kind];
     const noun = options.outstanding === 1 ? singular : plural;
     super(
-      'KERNEL_H7_LEAK',
-      `HMR leak check (H7): module '${options.moduleId}' leaked ${String(options.outstanding)} ${noun} ` +
-        `across a hot replace. They were still outstanding after the module was disposed, so every further ` +
-        `edit accumulates that many more (before the edit: ${String(options.before)}, ` +
+      'KERNEL_LEAK_DETECTED',
+      `Hot replace leaked ${String(options.outstanding)} ${noun} from module '${options.moduleId}'. ` +
+        `The registration remained after the module was disposed, so future edits will accumulate more ` +
+        `(before the edit: ${String(options.before)}, ` +
         `outstanding after disposal: ${String(options.outstanding)}, ` +
         `after re-activation: ${String(options.after)}). ` +
-        `A module's teardown must release everything it registered: subscribe through ctx.on/ctx.effect so ` +
-        `L3 can clean up, and make sure a dispose(ctx) handler does not register anything new — cleanups ` +
-        `have already run by the time it is called.`,
+        `Release every registration during teardown: use ctx.on/ctx.effect for subscriptions and effects, ` +
+        `and do not register new work in dispose(ctx), which runs after cleanups.`,
       { moduleId: options.moduleId },
     );
     this.name = 'LeakInvariantViolation';

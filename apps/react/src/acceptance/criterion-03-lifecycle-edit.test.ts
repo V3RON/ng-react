@@ -201,12 +201,12 @@ describe('acceptance criterion 3 — editing orders/lifecycle.ts', () => {
     expect(kernel.epochOf('orders')).toBe(CONSECUTIVE_EDITS);
 
     // **H7 proper**: a violation is a `LeakInvariantViolation` routed to the
-    // F4 sinks with `code === 'KERNEL_H7_LEAK'` (it is never thrown — "a leak
+    // F4 sinks with `code === 'KERNEL_LEAK_DETECTED'` (it is never thrown — "a leak
     // report that broke the app would be a worse bug than the leak"). The
     // test kernel's harness sink collects every routed error, so this is the
     // check itself and not a proxy for it.
     const leakWarnings = kernel.errors.filter(
-      (entry) => (entry.error as { code?: string }).code === 'KERNEL_H7_LEAK',
+      (entry) => (entry.error as { code?: string }).code === 'KERNEL_LEAK_DETECTED',
     );
     expect(leakWarnings).toEqual([]);
     // Nothing else was routed either — a failed re-activation would be here.

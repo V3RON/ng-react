@@ -37,7 +37,7 @@ export class ReservedModuleIdError extends KernelError {
     super(
       'KERNEL_RESERVED_MODULE_ID',
       `Module id '${id}' is reserved and cannot be used with moduleRef(). ` +
-        `'app' is reserved for resolutions started outside any module (ADR-2).`,
+        `'app' identifies resolutions started outside any module. Choose a different module id.`,
       { moduleId: id },
     );
     this.name = 'ReservedModuleIdError';
@@ -382,7 +382,7 @@ export class PersistentTransferError extends KernelError {
       `Persistent state for '${tokenLabel}' (owned by '${moduleId}') could not be carried across the HMR ` +
         `re-activation: ${reason}. The freshly constructed instance keeps its initial state and nothing was ` +
         `thrown. Give the provider a transfer(oldInstance, newInstance) hook, or a snapshot()/restore() pair ` +
-        `whose snapshot is structured-cloneable (ADR-3).`,
+        `whose snapshot is structured-cloneable.`,
       { moduleId, cause },
     );
     this.name = 'PersistentTransferError';
