@@ -104,18 +104,16 @@ describe('apps/native composition root', () => {
     ]);
   });
 
-  it('ADR-5/#42: the native HmrAdapter is { enabled: true } with invalidate omitted', () => {
+  it('ADR-5: the native HmrAdapter is {} because Metro cannot invalidate', () => {
     // `packages/ng-react/src/hmr/adapter.ts` predicts exactly this object for
-    // Metro — "it is `{ enabled: true }` with the optional member omitted,
-    // exactly the case `createNoopHmrAdapter` keeps exercised" — and this is
-    // the first time a real Metro host has supplied one.
+    // Metro has no invalidation API, so it supplies the same `{}` shape as
+    // the noop adapter. The optional member is the sole capability signal.
     //
     // Asserted with `Object.keys`, not with `adapter.invalidate === undefined`:
     // a no-op `invalidate` added by a later tidy-up would satisfy the second
     // and would silently stop exercising the absent-member call site
     // `this.hmr.invalidate?.(…)` guards.
-    expect(Object.keys(nativeHmrAdapter)).toEqual(['enabled']);
-    expect(nativeHmrAdapter.enabled).toBe(true);
+    expect(Object.keys(nativeHmrAdapter)).toEqual([]);
   });
 
   it('H2: every module package is armed with this kernel through acceptHotUpdate', () => {

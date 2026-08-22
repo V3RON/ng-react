@@ -16,10 +16,8 @@ export interface HmrAdapter {
    *
    * @param id The **kernel** module id the kernel failed to re-activate. An
    *   adapter may map it onto whatever its bundler calls that chunk.
-   */
+  */
   invalidate?(id: string, reason?: string): void;
-  /** Whether a hot runtime is present. `false` in a production build. */
-  readonly enabled: boolean;
 }
 
 /**
@@ -49,23 +47,22 @@ export interface ViteHotContext {
  * ```
  */
 export function createViteHmrAdapter(hot: ViteHotContext | undefined): HmrAdapter {
-  if (hot === undefined) {
+  const invalidate = hot?.invalidate;
+  if (invalidate === undefined) {
     return createNoopHmrAdapter();
   }
 
   return {
-    enabled: true,
     invalidate(id: string, reason?: string): void {
-      hot.invalidate?.(reason === undefined ? id : `${id}: ${reason}`);
+      invalidate(reason === undefined ? id : `${id}: ${reason}`);
     },
   };
 }
 
 /**
- * Creates the `KernelOptions.hmr` default: an adapter that escalates nothing
- * and reports `enabled: false`. It omits `invalidate` rather than supplying
- * a no-op one.
+ * Creates the `KernelOptions.hmr` default: `{}`, an adapter that escalates
+ * nothing because it omits `invalidate` rather than supplying a no-op one.
  */
 export function createNoopHmrAdapter(): HmrAdapter {
-  return { enabled: false };
+  return {};
 }
