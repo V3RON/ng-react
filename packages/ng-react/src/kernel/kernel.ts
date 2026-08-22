@@ -455,7 +455,7 @@ export class KernelImpl implements Kernel {
       if (id === APP_REQUESTER) {
         throw new InvalidDescriptorError(
           `createKernel(): ${source} uses the reserved module id 'app'. ` +
-            `'app' is reserved for resolutions started outside any module (ADR-2).`,
+            `'app' identifies resolutions started outside any module. Choose a different module id.`,
           id,
         );
       }
