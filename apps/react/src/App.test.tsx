@@ -53,6 +53,14 @@ async function waitForStatus(
 }
 
 describe('demo app', () => {
+  it('#70: installs a non-throwing fatal handler because AppRoot renders failures', () => {
+    const { kernel } = createAppKernel(undefined);
+    const onFatal = (kernel as unknown as { readonly onFatal?: unknown }).onFatal;
+
+    expect(onFatal).toEqual(expect.any(Function));
+    expect(() => (onFatal as (error: unknown) => void)(new Error('startup failed'))).not.toThrow();
+  });
+
   it('criterion 1: kernel.activate(OrdersModule) transitively activates payments', async () => {
     const { kernel, log } = createAppKernel(undefined);
     await kernel.whenStartupComplete();

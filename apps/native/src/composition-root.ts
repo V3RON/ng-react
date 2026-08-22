@@ -130,6 +130,10 @@ export function createAppKernel(hotFor: HotContextSource = () => undefined): App
   const kernel = createKernel({
     modules: appModules,
     hmr: nativeHmrAdapter,
+    // `StartupGate` renders the `whenStartupComplete()` rejection itself.
+    // Suppress the default macrotask rethrow so React Native's LogBox does
+    // not cover that deliberate failure screen.
+    onFatal: () => {},
   });
 
   // **H2 — and under Metro this is a documented no-op, which is the point.**

@@ -89,6 +89,14 @@ function recordCollection<T extends { readonly id: string }>(
 }
 
 describe('apps/native composition root', () => {
+  it('#70: installs a non-throwing fatal handler because StartupGate renders failures', () => {
+    const { kernel } = createAppKernel();
+    const onFatal = (kernel as unknown as { readonly onFatal?: unknown }).onFatal;
+
+    expect(onFatal).toEqual(expect.any(Function));
+    expect(() => (onFatal as (error: unknown) => void)(new Error('startup failed'))).not.toThrow();
+  });
+
   it('registers the same six module packages the web root does, plus this host’s own shell', () => {
     // The claim issue #53 exists to test, expressed as an assertion: the
     // feature modules are reused, not re-declared. `shell` is the one
