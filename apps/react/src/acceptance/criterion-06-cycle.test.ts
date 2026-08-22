@@ -20,7 +20,11 @@ import { createKernel, defineModule, DependencyCycleError, moduleRef } from '@ng
 import { lintedFiles, lintFixture, messagesFor } from './lint-fixture';
 import { SPEC_G1_MESSAGE } from './spec-text';
 
-describe('acceptance criterion 6 — a cycle between two modules', () => {
+// These tests run the real ESLint/root resolver in-process; allow that work
+// to finish when the machine is contended without changing Vitest globally.
+const ESLINT_SUITE_OPTIONS = { timeout: 30_000 };
+
+describe('acceptance criterion 6 — a cycle between two modules', ESLINT_SUITE_OPTIONS, () => {
   it('B3: the contract import cycle is reported by the root ESLint config', async () => {
     const results = await lintFixture('contract-cycle');
 
