@@ -247,11 +247,14 @@ the leaked interval is invisible. The counters catch "teardown did not run" — 
 cleanup loop fails the H7 20-edit test immediately — not "the developer never registered a
 cleanup". Do not read "H7 passes" as "nothing leaks".
 
-### 5.13 `whenStartupComplete()` does not gate on non-critical modules
+### 5.13 `whenStartupComplete()` gates the startup-critical closure
 
-A3 gates it on eager **critical** modules only. A test that awaits it and then asserts a
-non-critical module's post-failure state is racy, and will pass almost always — which is worse
-than failing. Use `waitForStatus`. This is #51, and the pattern is easy to reintroduce.
+A3 gates on critical modules in every eager module's transitive activation closure. A lazy
+critical dependency is therefore part of the gate and its startup failure is fatal (#61).
+Non-critical modules remain outside the condition: a test that awaits the gate and then asserts a
+non-critical module's post-failure state is racy. Use `waitForStatus` for that state (#51).
+When the closure contains no critical module, the gate deliberately resolves immediately and the
+React binding emits a dev warning.
 
 ---
 

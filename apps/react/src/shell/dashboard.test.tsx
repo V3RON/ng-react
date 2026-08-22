@@ -37,7 +37,7 @@ async function mountDashboard(): Promise<Kernel> {
   const { kernel, log } = createAppKernel(undefined);
   await kernel.whenStartupComplete();
   // `nav` and `dashboard` are eager but **non-critical**, and A3 gates
-  // `whenStartupComplete` on eager *critical* modules only — so awaiting it
+  // `whenStartupComplete` on startup-critical modules only — so awaiting it
   // and then asserting on either is racy (HANDOFF §5.13, issue #51).
   // `activate` is idempotent and single-flight, so these join the in-flight
   // eager activation rather than starting a second one.
