@@ -19,8 +19,11 @@ import { describe, expect, it } from 'vitest';
 import { lintedFiles, lintFixture, lintPath, messagesFor } from './lint-fixture';
 
 const FIXTURE = 'boundary-violations';
+// These tests run the real ESLint/root resolver in-process; allow that work
+// to finish when the machine is contended without changing Vitest globally.
+const ESLINT_SUITE_OPTIONS = { timeout: 30_000 };
 
-describe('acceptance criterion 8 — the boundary preset rejects all three', () => {
+describe('acceptance criterion 8 — the boundary preset rejects all three', ESLINT_SUITE_OPTIONS, () => {
   it('the fixtures are actually linted — the guard for the three tests below', async () => {
     // Same reasoning as criterion 6's guard: the fixture directory is in the
     // root config's `ignores`, so a lint that quietly matched nothing would
