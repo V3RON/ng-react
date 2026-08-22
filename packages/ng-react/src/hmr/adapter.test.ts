@@ -31,13 +31,11 @@ function fakeHot(options: { readonly withInvalidate?: boolean } = {}) {
 }
 
 describe('createNoopHmrAdapter (H2)', () => {
-  it('H2: is disabled and escalates nothing', () => {
+  it('H2: is the empty adapter and escalates nothing', () => {
     const adapter = createNoopHmrAdapter();
-    expect(adapter.enabled).toBe(false);
-    // #42: one member and one optional member. A seam that grew back an
-    // `accept` or a `dispose` would be an interface nothing can call — see
-    // the reasoning on `HmrAdapter` itself.
-    expect(Object.keys(adapter)).toEqual(['enabled']);
+    // `invalidate` is the single optional capability: `{}` is the noop
+    // shape. A seam that grows another member is an interface nothing calls.
+    expect(Object.keys(adapter)).toEqual([]);
   });
 
   it('H2: omits the optional invalidate, so the kernel exercises the absent case', () => {
@@ -51,7 +49,7 @@ describe('createNoopHmrAdapter (H2)', () => {
 describe('createViteHmrAdapter (H2, ADR-5)', () => {
   it('H2: an undefined hot context (a production build) yields the noop adapter', () => {
     const adapter = createViteHmrAdapter(undefined);
-    expect(adapter.enabled).toBe(false);
+    expect(Object.keys(adapter)).toEqual([]);
     expect(adapter.invalidate).toBeUndefined();
   });
 
@@ -62,13 +60,13 @@ describe('createViteHmrAdapter (H2, ADR-5)', () => {
     adapter.invalidate?.('payments', 'graph re-validation failed');
     adapter.invalidate?.('payments');
 
-    expect(adapter.enabled).toBe(true);
     expect(bundler.invalidations).toEqual(['payments: graph re-validation failed', 'payments']);
   });
 
-  it('H2: invalidate is a no-op against a hot context that has none', () => {
+  it('H2: a hot context without invalidate yields the noop adapter', () => {
     const bundler = fakeHot({ withInvalidate: false });
     const adapter = createViteHmrAdapter(bundler.hot);
+    expect(Object.keys(adapter)).toEqual([]);
     expect(() => adapter.invalidate?.('payments', 'no invalidate here')).not.toThrow();
     expect(bundler.invalidations).toEqual([]);
   });

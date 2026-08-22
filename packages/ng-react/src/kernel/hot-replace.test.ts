@@ -318,7 +318,6 @@ describe('kernel.hotReplace — graph re-validation (G1, G2)', () => {
   function recordingAdapter(): HmrAdapter & { readonly invalidations: string[] } {
     const invalidations: string[] = [];
     return {
-      enabled: true,
       invalidations,
       invalidate: (id, reason) => {
         invalidations.push(reason === undefined ? id : `${id}: ${reason}`);
@@ -783,7 +782,7 @@ describe('kernel.hotReplace — H6 epochs', () => {
         },
       });
 
-    const hmr = { enabled: true, invalidate: vi.fn() };
+    const hmr = { invalidate: vi.fn() };
     const kernel = createKernel({ modules: [sinkModule(reports), authModule, build()], hmr });
     await settled(kernel);
     await kernel.activate(paymentsRef);

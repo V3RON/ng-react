@@ -142,8 +142,7 @@ export function createAppKernel(
   const kernel = createKernel({
     modules: appModules,
     // **ADR-5**: the kernel's own bundler seam. Worth being precise about
-    // what this buys today, because issue #42 is open on exactly this: of
-    // `HmrAdapter`'s four members the kernel calls only `invalidate` — the
+    // what this buys today: its only optional member is `invalidate` — the
     // escalation path when a hot update could not be applied in place. The
     // `accept` half of HMR is wired by the four `acceptHotUpdate` calls
     // below, which reach `import.meta.hot` directly from each module's own
