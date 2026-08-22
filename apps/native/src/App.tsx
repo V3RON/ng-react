@@ -41,7 +41,7 @@ export function App(): ReactElement {
       <AppKernel kernel={runtime.kernel}>
         <View style={styles.root}>
           <StatusBar style="dark" />
-          {/* Nothing below this renders until the app's eager critical
+          {/* Nothing below this renders until the app's startup-critical
               modules are ready. `<NavigationContainer>` sits inside the gate:
               a navigator mounted over modules that have not started comes up
               empty and fills in under the user. */}

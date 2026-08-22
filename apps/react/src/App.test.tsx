@@ -121,7 +121,7 @@ describe('demo app', () => {
     // **The startup half, asserted first and positively.** `debug` failing is
     // easy to show; "without affecting startup" is the clause that a passing
     // test can silently skip. `whenStartupComplete` resolves only when every
-    // eager *critical* module is `ready` and rejects if one cannot be (F2), so
+    // startup-critical module is `ready` and rejects if one cannot be (F2), so
     // awaiting it here is the machine-checked form of "the app started".
     await expect(kernel.whenStartupComplete()).resolves.toBeUndefined();
     expect(kernel.status(AuthModule)).toBe('ready');

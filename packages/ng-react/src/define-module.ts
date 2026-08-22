@@ -20,7 +20,7 @@ export interface ModuleDescriptor<Id extends string = string> {
   readonly dependsOn: readonly ModuleRef[];
   /** Whether the module activates at startup or on first use. */
   readonly load: LoadStrategy;
-  /** Whether this module failing to activate at startup fails startup as a whole. */
+  /** Whether this module failing during startup activation fails startup as a whole. */
   readonly critical: boolean;
   /** Returns the module's providers. Called once, at activation. */
   readonly providers?: () => AnyProviderRecord[] | Promise<AnyProviderRecord[]>;
@@ -51,9 +51,10 @@ export interface DefineModuleInput<Id extends string = string> {
    */
   readonly load?: LoadStrategy;
   /**
-   * Whether this module failing to activate at startup fails startup as a
-   * whole. A non-critical module is quarantined instead and the rest of the
-   * application comes up without it.
+   * Whether this module failing during startup activation fails startup as a
+   * whole. This also applies to a lazy module pulled into startup by an eager
+   * dependent. A non-critical module is quarantined instead and the rest of
+   * the application comes up without it.
    *
    * @default false
    */
