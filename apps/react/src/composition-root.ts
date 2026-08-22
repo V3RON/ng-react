@@ -141,6 +141,10 @@ export function createAppKernel(
 ): AppRuntime {
   const kernel = createKernel({
     modules: appModules,
+    // `AppRoot` renders the `whenStartupComplete()` rejection itself.
+    // Suppress the default macrotask rethrow so the browser's error overlay
+    // does not cover that deliberate failure screen.
+    onFatal: () => {},
     // **ADR-5**: the kernel's own bundler seam. Worth being precise about
     // what this buys today, because issue #42 is open on exactly this: of
     // `HmrAdapter`'s four members the kernel calls only `invalidate` — the

@@ -19,6 +19,10 @@ import type { KernelStartupState } from './startup-store';
  * `failed` carries the error that stopped startup, unwrapped. It is reached
  * whenever an eager critical module cannot become ready, so a consumer that
  * handles only `ready` leaves the app on its loading screen for good.
+ * Rendering this state does not suppress the kernel's default fatal rethrow.
+ * If this UI is the host's intended failure surface, pass `onFatal` to
+ * `createKernel` at the composition root; a no-op is sufficient to prevent a
+ * React Native LogBox or browser error overlay from covering it.
  *
  * Startup settles once per kernel. There is no retry: `useModule(ref)` offers
  * a per-module one, and recovering from a failed startup means building a new
@@ -57,6 +61,10 @@ export interface KernelStartupGateProps {
    * Required: a gate that renders nothing for a failed startup shows its
    * loading state for good, and that is the failure this component exists to
    * prevent.
+   *
+   * This only chooses rendered output; it does not change `onFatal`. Supply a
+   * handler when creating the kernel if this should be the only visible fatal
+   * surface.
    */
   readonly renderFailure: (error: unknown) => ReactNode;
 }
