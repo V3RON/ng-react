@@ -31,6 +31,13 @@ import { ESLint } from 'eslint';
  */
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
+/**
+ * Real ESLint loads the root config, TypeScript parser, resolver, and fixture graph, which can
+ * exceed Vitest's 5 s in-memory default under CPU contention. Keep the wider timeout local to
+ * those acceptance tests so ordinary unit tests still fail fast.
+ */
+export const ESLINT_ACCEPTANCE_TIMEOUT_MS = 15_000;
+
 /** One reported problem, flattened to something a test can assert on directly. */
 export interface LintMessage {
   readonly file: string;
