@@ -324,6 +324,13 @@ Discrepancies found in this document and how they were resolved:
   rejects `whenStartupComplete()` and reaches `onFatal` with that module's own error.
   With no critical module in the closure, the promise still resolves immediately without
   waiting for eager non-critical modules. See issue #61.
+- **§10 F2 / React failure UI — rendering does not replace host fatal policy.** The
+  kernel remains React-free (ADR-6): it cannot know that `useKernelStartup()` or
+  `<KernelStartupGate>` is rendering the rejected startup promise. A host that wants that
+  UI to be the only visible failure surface passes `onFatal` at the composition root; a
+  no-op is valid. Without it, the default macrotask rethrow still reaches React Native's
+  LogBox or the browser overlay and may cover the app-owned screen. Both demos model the
+  explicit handler. See issue #70.
 
 - **§5.2 field count** — the prose said "exactly six fields" while the worked example
   below it lists seven (`id`, `dependsOn`, `load`, `critical`, `providers`, `init`,
@@ -568,21 +575,12 @@ Discrepancies found in this document and how they were resolved:
   `getAll`, `subscribeAll`, `ownerOf`, `epochOf`, `bumpEpoch`, `subscribeEpoch`, `inspect`,
   `activate`, `whenStartupComplete`, `deactivate`, `hotReplace`, `retry`) were audited in the
   same pass and all forward their full signature. See #24 and #49.
-- **§11 H2 / ADR-5 — `HmrAdapter.enabled` is documented as a guard and is read by nothing.** Its
-  doc comment in `packages/ng-react/src/hmr/adapter.ts` says "`false` in a production build, or
-  when the host has no hot runtime. **The kernel guards its `invalidate` calls with it**, so a
-  production kernel never asks a bundler for anything." It does not: `enabled` is declared on the
-  interface, set by `createViteHmrAdapter` and `createNoopHmrAdapter`, and read by **no file** in
-  `packages/ng-react/src`. The only guard on either call site (`kernel/kernel.ts:1218` and
-  `:1354`) is the `?.` that tests for the *optional member*. Measured by re-running the existing
-  H6 invalidate test with `{ enabled: false, invalidate: vi.fn() }`: `invalidate` is still called
-  with `('payments', 'module could not be re-activated after a hot update')`. So `{ enabled: true }`
-  with `invalidate` omitted — the Metro adapter — is behaviourally identical to
-  `createNoopHmrAdapter()`, and a rule stated in a doc is not enforced by code (principle 4,
-  `AGENTS.md` §9). **Not resolved.** Found while wiring the native composition root, and
-  deliberately left unfixed there for the reason #49 was: the fix is a change to
-  `packages/ng-react/src/kernel/kernel.ts`, and issue #53 exists to show the six module packages
-  and the kernel are reused *unmodified*. See issue #53.
+- **§11 H2 / ADR-5 — a separate boolean duplicated a capability the kernel already derives.**
+  The kernel only guards invalidation with `this.hmr.invalidate?.(…)`; the boolean was declared and
+  written but never read. **Resolved:** remove it. Optional `invalidate` is the sole
+  capability signal, and `{}` is both `createNoopHmrAdapter()` and the Metro adapter shape. An
+  adapter with `invalidate` continues to receive escalation calls without any redundant kernel
+  guard. See issue #58.
 - **§11 H2 — the generated hot block's Metro no-op is now measured rather than reasoned, and the
   mechanism is not the one the comment predicted.** The portability note on each generated
   `acceptHotUpdate` says Metro "does not have" `import.meta.hot`. Under Expo SDK 57 that is true

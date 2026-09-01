@@ -17,7 +17,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { createKernel, defineModule, DependencyCycleError, moduleRef } from '@ng-react/kernel';
-import { lintedFiles, lintFixture, messagesFor } from './lint-fixture';
+import {
+  ESLINT_ACCEPTANCE_TIMEOUT_MS,
+  lintedFiles,
+  lintFixture,
+  messagesFor,
+} from './lint-fixture';
 import { SPEC_G1_MESSAGE } from './spec-text';
 
 describe('acceptance criterion 6 — a cycle between two modules', () => {
@@ -41,7 +46,7 @@ describe('acceptance criterion 6 — a cycle between two modules', () => {
     for (const result of results) {
       expect(result.errorCount).toBeGreaterThan(0);
     }
-  });
+  }, ESLINT_ACCEPTANCE_TIMEOUT_MS);
 
   it('B3: no-cycle fires because of a real graph, not because nothing resolved', async () => {
     // The second half of #43's lesson, and the reason `no-unresolved` is in
@@ -51,7 +56,7 @@ describe('acceptance criterion 6 — a cycle between two modules', () => {
     // reported a cycle it could not possibly have seen.
     const results = await lintFixture('contract-cycle');
     expect(messagesFor(results, 'import-x/no-unresolved')).toEqual([]);
-  });
+  }, ESLINT_ACCEPTANCE_TIMEOUT_MS);
 
   it('G1: forced past lint, registration is fatal and prints the full cycle in order', () => {
     // "Forced past lint" made literal: two descriptors whose `dependsOn`

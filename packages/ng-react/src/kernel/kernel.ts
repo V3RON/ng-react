@@ -76,6 +76,12 @@ export interface KernelOptions {
    * cannot come up. With no handler the failure is rethrown from a fresh
    * macrotask, so the host's global error reporting surfaces it.
    *
+   * A host that renders the rejection itself — through `useKernelStartup()`,
+   * `<KernelStartupGate>`, or its own `whenStartupComplete()` handling —
+   * should provide a handler, even a no-op. Rendering a failure UI does not
+   * disable the default rethrow; without a handler React Native's LogBox or a
+   * browser error overlay may cover the UI the host deliberately rendered.
+   *
    * @default rethrow from a macrotask
    */
   readonly onFatal?: (error: unknown) => void;

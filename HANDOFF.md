@@ -62,8 +62,8 @@ correct or extend the brief. **Tell every sub-agent to run `gh issue view <n> --
 ### Public API
 
 `packages/ng-react/src/index.ts` is the single auditable surface — no `export *`. Roughly 50 named
-exports: identity, declaration, kernel, React bindings, HMR (`HmrAdapter` is now **`invalidate` +
-`enabled` only**, see §4), and testing. `ProviderRegistry`, `Resolver`, `Container`, `KernelImpl`,
+exports: identity, declaration, kernel, React bindings, HMR (`HmrAdapter` has optional
+**`invalidate` only**, see §4), and testing. `ProviderRegistry`, `Resolver`, `Container`, `KernelImpl`,
 `ResolutionGraph`, `LeakInvariantCheck` are internal and deliberately not exported.
 
 ---
@@ -136,7 +136,8 @@ Full text in `AGENTS.md`; spec §17 is the spec-side record.
 | 10 | **`AnyToken` / `AnyProviderRecord`** erased aliases; `any` confined to those two declarations |
 
 **ADR-5 was narrowed on day 3 (#42/#46/#47), and this is binding.** `HmrAdapter` was
-`accept`/`dispose`/`invalidate`; it is now **`invalidate` + `enabled` only**. `accept` cannot live
+`accept`/`dispose`/`invalidate`/`enabled`; it is now **optional `invalidate` only**. `{}` is the
+noop and Metro shape. `accept` cannot live
 behind an adapter *at all*: Vite decides self-acceptance by lexically scanning a module's own
 source for `import.meta.hot.accept`, so any indirection makes every edit a full page reload. The
 sentence that still binds is the one that matters — no file in `packages/ng-react` may name a
@@ -255,6 +256,14 @@ Non-critical modules remain outside the condition: a test that awaits the gate a
 non-critical module's post-failure state is racy. Use `waitForStatus` for that state (#51).
 When the closure contains no critical module, the gate deliberately resolves immediately and the
 React binding emits a dev warning.
+
+### 5.14 A rendered startup failure does not suppress the default fatal rethrow
+
+`useKernelStartup()` and `<KernelStartupGate>` observe `whenStartupComplete()`; they do not alter
+the kernel's host-fatal policy. If an app renders its own failure screen, its composition root must
+pass `onFatal` (a no-op is valid) or React Native LogBox / the browser overlay can cover that screen.
+The kernel cannot infer that a React gate exists without violating ADR-6. Both demo roots pin the
+explicit handler in tests and issue #70 records the on-device overlap check.
 
 ---
 
