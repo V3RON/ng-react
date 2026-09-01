@@ -62,8 +62,8 @@ correct or extend the brief. **Tell every sub-agent to run `gh issue view <n> --
 ### Public API
 
 `packages/ng-react/src/index.ts` is the single auditable surface — no `export *`. Roughly 50 named
-exports: identity, declaration, kernel, React bindings, HMR (`HmrAdapter` is now **`invalidate` +
-`enabled` only**, see §4), and testing. `ProviderRegistry`, `Resolver`, `Container`, `KernelImpl`,
+exports: identity, declaration, kernel, React bindings, HMR (`HmrAdapter` has optional
+**`invalidate` only**, see §4), and testing. `ProviderRegistry`, `Resolver`, `Container`, `KernelImpl`,
 `ResolutionGraph`, `LeakInvariantCheck` are internal and deliberately not exported.
 
 ---
@@ -136,7 +136,8 @@ Full text in `AGENTS.md`; spec §17 is the spec-side record.
 | 10 | **`AnyToken` / `AnyProviderRecord`** erased aliases; `any` confined to those two declarations |
 
 **ADR-5 was narrowed on day 3 (#42/#46/#47), and this is binding.** `HmrAdapter` was
-`accept`/`dispose`/`invalidate`; it is now **`invalidate` + `enabled` only**. `accept` cannot live
+`accept`/`dispose`/`invalidate`/`enabled`; it is now **optional `invalidate` only**. `{}` is the
+noop and Metro shape. `accept` cannot live
 behind an adapter *at all*: Vite decides self-acceptance by lexically scanning a module's own
 source for `import.meta.hot.accept`, so any indirection makes every edit a full page reload. The
 sentence that still binds is the one that matters — no file in `packages/ng-react` may name a
