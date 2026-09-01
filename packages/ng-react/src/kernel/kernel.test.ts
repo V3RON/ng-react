@@ -159,7 +159,7 @@ describe('createKernel — registration (spec §6)', () => {
     const descriptor = { id: forged, dependsOn: [], load: 'lazy', critical: false } as ModuleDescriptor;
     expect(() => createKernel({ modules: [descriptor] })).toThrow(
       "createKernel(): modules[0] uses the reserved module id 'app'. " +
-        "'app' is reserved for resolutions started outside any module (ADR-2).",
+        "'app' identifies resolutions started outside any module. Choose a different module id.",
     );
   });
 

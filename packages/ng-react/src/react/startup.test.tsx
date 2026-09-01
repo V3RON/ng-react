@@ -446,6 +446,6 @@ describe('the gate under StrictMode, and the primitive it is sugar over', () => 
           <Probe />
         </StrictMode>,
       ),
-    ).toThrow(/useKernelStartup\(\) was called outside <AppKernel>/);
+    ).toThrow(/useKernelStartup\(\) requires an enclosing <AppKernel>\./);
   });
 });

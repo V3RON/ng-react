@@ -65,10 +65,9 @@ function useTransientWarning(
     }
     warnedTransientTokens.add(token);
     console.warn(
-      `useService(${token.label}) resolves a 'transient' provider (owned by '${owner}'): ` +
-        'a new instance is constructed on every resolution, so nothing about it is stable ' +
-        'across renders and the container will never dispose it (C2, C7). ' +
-        'Resolve transients inside an event handler or an effect instead (R2). ' +
+      `useService(${token.label}) resolved a transient provider owned by '${owner}'. ` +
+        'A transient creates a new instance on every resolution, so its value is not stable across ' +
+        'renders and the container does not dispose it. Resolve it in an event handler or effect instead. ' +
         'The ng-react-modules/no-transient-in-component lint rule catches this statically only when '  +
         'the provider is declared in the same file; this warning covers the rest.',
     );

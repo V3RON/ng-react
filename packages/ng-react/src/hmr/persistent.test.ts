@@ -214,7 +214,7 @@ describe('transferPersistentState (ADR-3)', () => {
         're-activation: it declares no transfer() hook, the old instance has no snapshot() paired with a ' +
         'restore() on the new one, and the two are not both plain objects. The freshly constructed instance ' +
         'keeps its initial state and nothing was thrown. Give the provider a transfer(oldInstance, ' +
-        'newInstance) hook, or a snapshot()/restore() pair whose snapshot is structured-cloneable (ADR-3).',
+        'newInstance) hook, or a snapshot()/restore() pair whose snapshot is structured-cloneable.',
     );
   });
 
@@ -240,7 +240,7 @@ describe('transferPersistentState (ADR-3)', () => {
       "Persistent state for 'uploads/UploadStore' (owned by 'uploads') could not be carried across the HMR " +
         're-activation: its snapshot() could not be cloned and restored. The freshly constructed instance ' +
         'keeps its initial state and nothing was thrown. Give the provider a transfer(oldInstance, ' +
-        'newInstance) hook, or a snapshot()/restore() pair whose snapshot is structured-cloneable (ADR-3).',
+        'newInstance) hook, or a snapshot()/restore() pair whose snapshot is structured-cloneable.',
     );
     // The DataCloneError is preserved, not swallowed.
     expect((sink.reports[0]?.error as PersistentTransferError).cause).toBeInstanceOf(Error);
@@ -268,7 +268,7 @@ describe('transferPersistentState (ADR-3)', () => {
       "Persistent state for 'orders/RetryCount' (owned by 'orders') could not be carried across the HMR " +
         're-activation: its transfer(oldInstance, newInstance) hook threw. The freshly constructed instance ' +
         'keeps its initial state and nothing was thrown. Give the provider a transfer(oldInstance, ' +
-        'newInstance) hook, or a snapshot()/restore() pair whose snapshot is structured-cloneable (ADR-3).',
+        'newInstance) hook, or a snapshot()/restore() pair whose snapshot is structured-cloneable.',
     );
     expect(((sink.reports[0]?.error as PersistentTransferError).cause as Error).message).toBe(
       'migration from v1 state shape failed',

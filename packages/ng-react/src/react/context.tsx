@@ -36,10 +36,10 @@ class NestedAppKernelError extends KernelError {
   constructor() {
     super(
       'REACT_NESTED_APP_KERNEL',
-      'Nested <AppKernel>: there is exactly one kernel per app (R1). ' +
-        'Remove the inner <AppKernel> and let the subtree read the outer one with useKernel(). ' +
-        'If you need a second, isolated kernel — in a test — build it with createTestKernel() ' +
-        'and render it as the only <AppKernel> of that tree (R4).',
+      'Cannot render <AppKernel> inside another <AppKernel>: an app can have only one kernel. ' +
+        'Remove the inner <AppKernel> and use useKernel() to access the existing kernel. ' +
+        'For an isolated test kernel, create it with createTestKernel() and render it as the only ' +
+        '<AppKernel> in that tree.',
     );
     this.name = 'NestedAppKernelError';
   }
@@ -50,9 +50,9 @@ class MissingAppKernelError extends KernelError {
   constructor(hookName: string) {
     super(
       'REACT_MISSING_APP_KERNEL',
-      `${hookName}() was called outside <AppKernel> (R1). ` +
-        'Wrap the tree in <AppKernel kernel={kernel}> at the composition root, ' +
-        'or, in a test, in <AppKernel kernel={createTestKernel({ modules: [...] })}>.',
+      `${hookName}() requires an enclosing <AppKernel>. ` +
+        'Wrap the composition root in <AppKernel kernel={kernel}>. ' +
+        'In a test, render with <AppKernel kernel={createTestKernel({ modules: [...] })}>.',
     );
     this.name = 'MissingAppKernelError';
   }
