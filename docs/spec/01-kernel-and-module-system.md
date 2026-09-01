@@ -131,7 +131,7 @@ Normative requirements:
 
 **A2.** Activation is idempotent and single-flight: concurrent triggers await one activation. Module status is one of `registered | activating | ready | failed | disposed`, exposed to React via `useModule` (section 12) and observable programmatically via `kernel.status(ref)` subscriptions, which subsystem modules use.
 
-**A3.** `init` may be async. The kernel imposes a configurable timeout per module (default 10 s); on timeout the failure policy (section 10) applies. Eager critical modules' `init` completion gates splash-screen dismissal; this hook point is specified here, its use by a startup orchestration service in spec 05.
+**A3.** `init` may be async. The kernel imposes a configurable timeout per module (default 10 s); on timeout the failure policy (section 10) applies. Critical modules in the startup activation closure — every eager module plus its transitive dependencies — gate splash-screen dismissal. If that closure contains no critical module, the gate resolves immediately without waiting for eager non-critical activation. This hook point is specified here, its use by a startup orchestration service in spec 05.
 
 **A4.** Deactivation (`kernel.deactivate(ref)`) disposes the module and every active module that transitively depends on it, in reverse topological order, before disposing the module itself. Used by feature-flag kills, logout flows, tests, and HMR.
 
@@ -220,7 +220,7 @@ export async function init(ctx: ModuleContext) {
 
 **F1.** A module whose activation fails (provider thunk throws, `init` throws or times out) transitions to `failed` with the error retained.
 
-**F2.** If `critical: true` and the failure occurs during startup activation, startup fails visibly (dev: red screen with the module id and error; prod: configurable fatal handler). Critical modules are expected to be few.
+**F2.** If `critical: true` and the failure occurs during startup activation, startup fails visibly (dev: red screen with the module id and error; prod: configurable fatal handler). This includes a lazy critical module pulled into startup by an eager dependent; the fatal error names the critical module rather than only the dependent that triggered it. Critical modules are expected to be few.
 
 **F3.** Non-critical failures quarantine the module: its providers and contributions are withdrawn (reactive collections notify, so e.g. the navigation module drops its routes automatically), and dependents' activation fails with a cause chain naming the quarantined module. `kernel.retry(ref)` re-attempts activation.
 
@@ -316,6 +316,21 @@ that §16 asks for.
   See ADR-4.
 
 Discrepancies found in this document and how they were resolved:
+
+- **§6 A3 / §10 F2 — `critical` on a lazy startup dependency.** Load strategy and
+  criticality are independent. The startup gate is built from critical modules in the
+  transitive activation closure of every eager module, not only descriptors whose own
+  `load` is `eager`. A lazy critical dependency therefore gates startup and its failure
+  rejects `whenStartupComplete()` and reaches `onFatal` with that module's own error.
+  With no critical module in the closure, the promise still resolves immediately without
+  waiting for eager non-critical modules. See issue #61.
+- **§10 F2 / React failure UI — rendering does not replace host fatal policy.** The
+  kernel remains React-free (ADR-6): it cannot know that `useKernelStartup()` or
+  `<KernelStartupGate>` is rendering the rejected startup promise. A host that wants that
+  UI to be the only visible failure surface passes `onFatal` at the composition root; a
+  no-op is valid. Without it, the default macrotask rethrow still reaches React Native's
+  LogBox or the browser overlay and may cover the app-owned screen. Both demos model the
+  explicit handler. See issue #70.
 
 - **§5.2 field count** — the prose said "exactly six fields" while the worked example
   below it lists seven (`id`, `dependsOn`, `load`, `critical`, `providers`, `init`,
@@ -560,21 +575,12 @@ Discrepancies found in this document and how they were resolved:
   `getAll`, `subscribeAll`, `ownerOf`, `epochOf`, `bumpEpoch`, `subscribeEpoch`, `inspect`,
   `activate`, `whenStartupComplete`, `deactivate`, `hotReplace`, `retry`) were audited in the
   same pass and all forward their full signature. See #24 and #49.
-- **§11 H2 / ADR-5 — `HmrAdapter.enabled` is documented as a guard and is read by nothing.** Its
-  doc comment in `packages/ng-react/src/hmr/adapter.ts` says "`false` in a production build, or
-  when the host has no hot runtime. **The kernel guards its `invalidate` calls with it**, so a
-  production kernel never asks a bundler for anything." It does not: `enabled` is declared on the
-  interface, set by `createViteHmrAdapter` and `createNoopHmrAdapter`, and read by **no file** in
-  `packages/ng-react/src`. The only guard on either call site (`kernel/kernel.ts:1218` and
-  `:1354`) is the `?.` that tests for the *optional member*. Measured by re-running the existing
-  H6 invalidate test with `{ enabled: false, invalidate: vi.fn() }`: `invalidate` is still called
-  with `('payments', 'module could not be re-activated after a hot update')`. So `{ enabled: true }`
-  with `invalidate` omitted — the Metro adapter — is behaviourally identical to
-  `createNoopHmrAdapter()`, and a rule stated in a doc is not enforced by code (principle 4,
-  `AGENTS.md` §9). **Not resolved.** Found while wiring the native composition root, and
-  deliberately left unfixed there for the reason #49 was: the fix is a change to
-  `packages/ng-react/src/kernel/kernel.ts`, and issue #53 exists to show the six module packages
-  and the kernel are reused *unmodified*. See issue #53.
+- **§11 H2 / ADR-5 — a separate boolean duplicated a capability the kernel already derives.**
+  The kernel only guards invalidation with `this.hmr.invalidate?.(…)`; the boolean was declared and
+  written but never read. **Resolved:** remove it. Optional `invalidate` is the sole
+  capability signal, and `{}` is both `createNoopHmrAdapter()` and the Metro adapter shape. An
+  adapter with `invalidate` continues to receive escalation calls without any redundant kernel
+  guard. See issue #58.
 - **§11 H2 — the generated hot block's Metro no-op is now measured rather than reasoned, and the
   mechanism is not the one the comment predicted.** The portability note on each generated
   `acceptHotUpdate` says Metro "does not have" `import.meta.hot`. Under Expo SDK 57 that is true

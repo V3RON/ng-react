@@ -5,6 +5,7 @@ import {
   DependencyActivationError,
   DuplicateModuleIdError,
   InvalidDescriptorError,
+  KernelError,
   ModuleActivationError,
   ModuleDisposeTimeoutError,
 } from '../errors';
@@ -74,6 +75,12 @@ export interface KernelOptions {
    * answers the separate question of what the host should do when the app
    * cannot come up. With no handler the failure is rethrown from a fresh
    * macrotask, so the host's global error reporting surfaces it.
+   *
+   * A host that renders the rejection itself — through `useKernelStartup()`,
+   * `<KernelStartupGate>`, or its own `whenStartupComplete()` handling —
+   * should provide a handler, even a no-op. Rendering a failure UI does not
+   * disable the default rethrow; without a handler React Native's LogBox or a
+   * browser error overlay may cover the UI the host deliberately rendered.
    *
    * @default rethrow from a macrotask
    */
@@ -242,11 +249,14 @@ export interface Kernel {
    */
   activate(ref: ModuleRef): Promise<void>;
   /**
-   * Resolves once every eager, critical module is `ready`, and rejects with
-   * the first such module's failure if one cannot become ready.
+   * Resolves once every critical module in the startup activation closure is
+   * `ready`, and rejects with the first such module's failure if one cannot
+   * become ready. The closure contains every eager module and its transitive
+   * dependencies, including dependencies whose own load strategy is `lazy`.
    *
-   * Eager non-critical modules are not part of the condition, so a failure
-   * in one neither delays nor rejects this promise.
+   * Non-critical modules are not part of the condition. If the closure has no
+   * critical module, this promise resolves immediately, before eager
+   * non-critical activation necessarily finishes.
    */
   whenStartupComplete(): Promise<void>;
   /**
@@ -426,7 +436,7 @@ export class KernelImpl implements Kernel {
   private readonly startupComplete: Promise<void>;
   private readonly resolveStartup: () => void;
   private readonly rejectStartup: (error: unknown) => void;
-  /** The eager, critical module ids `whenStartupComplete` is still waiting on. */
+  /** Critical module ids in the startup activation closure that are not ready yet. */
   private readonly pendingCriticalStartup = new Set<string>();
 
   constructor(options: KernelOptions) {
@@ -523,8 +533,17 @@ export class KernelImpl implements Kernel {
     // handed out unchanged; this only marks it handled.
     void this.startupComplete.catch(() => {});
     for (const descriptor of this.descriptors.values()) {
-      if (descriptor.load === 'eager' && descriptor.critical) {
-        this.pendingCriticalStartup.add(descriptor.id.id);
+      if (descriptor.load !== 'eager') {
+        continue;
+      }
+      const startupModuleIds = [
+        descriptor.id.id,
+        ...this.graph.dependenciesOf(descriptor.id.id, { transitive: true }),
+      ];
+      for (const moduleId of startupModuleIds) {
+        if (this.descriptors.get(moduleId)?.critical) {
+          this.pendingCriticalStartup.add(moduleId);
+        }
       }
     }
     if (this.pendingCriticalStartup.size === 0) {
@@ -1165,10 +1184,11 @@ export class KernelImpl implements Kernel {
    * because an earlier eager module listing it in `dependsOn` activated it
    * first — which is also how a `lazy` module comes up at startup.
    *
-   * A non-critical eager failure does not stop the pass: that module is
-   * quarantined and the rest of the app comes up without it. A critical one
-   * stops the pass, rejects `whenStartupComplete()`, and raises the fatal
-   * handler.
+   * A startup failure whose cause chain contains no pending critical module
+   * does not stop the pass: the failed modules are quarantined and the rest
+   * of the app comes up without them. A pending critical failure anywhere in
+   * that chain stops the pass, rejects `whenStartupComplete()`, and raises the
+   * fatal handler with that critical module's error.
    */
   private async activateEagerModules(): Promise<void> {
     for (const moduleId of this.graph.topologicalOrder()) {
@@ -1178,24 +1198,43 @@ export class KernelImpl implements Kernel {
       }
       try {
         await this.activateById(moduleId);
-        this.markCriticalStartupReady(moduleId);
       } catch (error) {
-        if (descriptor.critical) {
+        const fatalError = this.findPendingCriticalStartupFailure(error);
+        if (fatalError !== undefined) {
           // Both halves fire: the promise rejects for a host that awaited
           // it, and `onFatal` (or its rethrowing default) fires for the host
           // that did not. Remaining eager modules are not activated.
-          this.rejectStartup(error);
-          raiseFatal(error, { dev: this.dev, ...(this.onFatal === undefined ? {} : { onFatal: this.onFatal }) });
+          this.rejectStartup(fatalError);
+          raiseFatal(fatalError, {
+            dev: this.dev,
+            ...(this.onFatal === undefined ? {} : { onFatal: this.onFatal }),
+          });
           return;
         }
         // Already quarantined by `runActivation`; the rest of the app comes
         // up without it.
       }
     }
-    // Reached only when no critical eager module failed. Redundant when
+    // Reached only when no startup-critical module failed. Redundant when
     // `markCriticalStartupReady` already fired, and the one that matters
-    // when there were no eager critical modules at all.
+    // when there were no startup-critical modules at all.
     this.resolveStartup();
+  }
+
+  /** Finds the first still-pending critical module error in a dependency failure chain. */
+  private findPendingCriticalStartupFailure(error: unknown): unknown | undefined {
+    let current = error;
+    while (current instanceof Error) {
+      if (
+        current instanceof KernelError &&
+        current.moduleId !== undefined &&
+        this.pendingCriticalStartup.has(current.moduleId)
+      ) {
+        return current;
+      }
+      current = current.cause;
+    }
+    return undefined;
   }
 
   /** Drops `moduleId` from the startup gate, resolving it once empty. */
@@ -1275,6 +1314,7 @@ export class KernelImpl implements Kernel {
       this.contexts.set(moduleId, ctx);
       await this.withActivationTimeout(moduleId, () => this.evaluateModule(moduleId, descriptor, ctx));
       this.setStatus(moduleId, 'ready');
+      this.markCriticalStartupReady(moduleId);
       // This module may be the one that contributes the error sinks.
       // Anything buffered while no sink existed goes out now, in order.
       this.errorRouter.flush();

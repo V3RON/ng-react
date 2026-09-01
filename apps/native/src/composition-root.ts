@@ -17,7 +17,7 @@
 //
 //  1. the shell module is this app's own (`./shell/module`), because a shell
 //     is by definition the host's — see that file;
-//  2. the `HmrAdapter` is a hand-written `{ enabled: true }` rather than
+//  2. the `HmrAdapter` is a hand-written `{}` rather than
 //     `createViteHmrAdapter(import.meta.hot)`. See `nativeHmrAdapter` below,
 //     which is where the one genuine kernel finding of this task is recorded.
 
@@ -42,53 +42,21 @@ import {
 import { module as shellModule } from './shell/module';
 
 /**
- * **ADR-5 / issue #42 — the Metro adapter, which is `{ enabled: true }` and
- * nothing else.**
+ * **ADR-5 — the Metro adapter, which is `{}`.**
  *
- * `HmrAdapter` is `invalidate?` + `enabled`. Metro has no `invalidate`: its
+ * `HmrAdapter` has only optional `invalidate`. Metro has no `invalidate`: its
  * hot runtime can accept an update or fall back to a full refresh, but it
- * exposes no "I could not apply this; escalate" call for a host to make. So
- * the optional member is **omitted**, which is exactly the case
- * `createNoopHmrAdapter` keeps exercised — the kernel's call site is
+ * exposes no "I could not apply this; escalate" call for a host to make.
+ * Therefore its adapter is `{}`, exactly the shape
+ * `createNoopHmrAdapter` returns. The kernel's call site is
  * `this.hmr.invalidate?.(…)` and an adapter that supplied a no-op would mean
  * nothing in the workspace ever exercised the absent one.
  *
- * `packages/ng-react/src/hmr/adapter.ts` predicts this in so many words: "A
- * Metro adapter is one line against the same interface and is deliberately
- * not shipped … it is `{ enabled: true }` with the optional member omitted."
- * That prediction is now exercised by a real Metro build. It is also written
- * here rather than in the kernel for the reason that comment gives — a Metro
- * adapter with no Metro app to run it would be untested code (principle 4).
- *
- * ---
- *
- * ### The finding: `enabled` is never read, so this object is behaviourally `createNoopHmrAdapter()`
- *
- * The same doc comment says `enabled` is "`false` in a production build, or
- * when the host has no hot runtime. **The kernel guards its `invalidate` calls
- * with it**, so a production kernel never asks a bundler for anything."
- *
- * It does not. `enabled` is declared in `HmrAdapter`, set by both shipped
- * factories, and **read by no file in `packages/ng-react/src`** — the only
- * guard on either `invalidate` call site (`kernel.ts:1218`, `kernel.ts:1354`)
- * is the `?.` that tests for the optional member. So `{ enabled: true }` with
- * `invalidate` omitted and `{ enabled: false }` are indistinguishable to the
- * kernel, and a production Vite adapter built from a live `import.meta.hot`
- * *would* call `invalidate` regardless of what `enabled` said.
- *
- * That makes the sentence above a rule described in a doc and not enforced by
- * code — `AGENTS.md` §9, principle 4 — which is the repository's own listed
- * grounds for rejecting a PR. It is reported in this PR body rather than
- * fixed here: the fix is a change to `packages/ng-react/src/kernel/kernel.ts`,
- * this task's issue says the feature modules and the kernel are to be reused
- * unmodified, and #48's agent set the precedent of leaving a found kernel
- * defect unfixed when fixing it would exceed the task that found it.
- *
- * `apps/native/src/composition-root.test.ts` pins the shape of this object —
- * `enabled === true`, `'invalidate' in adapter === false` — so a later
- * "tidy-up" that adds a no-op `invalidate` here fails a test that says why.
+ * This is written here rather than in the kernel because a Metro adapter with
+ * no Metro app to run it would be untested code (principle 4). The companion
+ * test pins the `{}` shape, so a later tidy-up cannot add a no-op invalidate.
  */
-export const nativeHmrAdapter: HmrAdapter = { enabled: true };
+export const nativeHmrAdapter: HmrAdapter = {};
 
 /**
  * The full descriptor list.
@@ -130,6 +98,10 @@ export function createAppKernel(hotFor: HotContextSource = () => undefined): App
   const kernel = createKernel({
     modules: appModules,
     hmr: nativeHmrAdapter,
+    // `StartupGate` renders the `whenStartupComplete()` rejection itself.
+    // Suppress the default macrotask rethrow so React Native's LogBox does
+    // not cover that deliberate failure screen.
+    onFatal: () => {},
   });
 
   // **H2 — and under Metro this is a documented no-op, which is the point.**

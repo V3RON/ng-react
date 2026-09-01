@@ -16,7 +16,13 @@
 // that fires with an unhelpful message has failed at what B1–B3 are for.
 
 import { describe, expect, it } from 'vitest';
-import { lintedFiles, lintFixture, lintPath, messagesFor } from './lint-fixture';
+import {
+  ESLINT_ACCEPTANCE_TIMEOUT_MS,
+  lintedFiles,
+  lintFixture,
+  lintPath,
+  messagesFor,
+} from './lint-fixture';
 
 const FIXTURE = 'boundary-violations';
 
@@ -30,7 +36,7 @@ describe('acceptance criterion 8 — the boundary preset rejects all three', () 
     for (const result of results) {
       expect(result.errorCount).toBeGreaterThan(0);
     }
-  });
+  }, ESLINT_ACCEPTANCE_TIMEOUT_MS);
 
   it('B1: a deep import into another module package\'s src/ is an error', async () => {
     const results = await lintFixture(FIXTURE);
@@ -59,7 +65,7 @@ describe('acceptance criterion 8 — the boundary preset rejects all three', () 
           "Import '@app/auth/contract' instead.",
       },
     ]);
-  });
+  }, ESLINT_ACCEPTANCE_TIMEOUT_MS);
 
   it('B1: and the resolver rejects the same deep imports independently of the rule', async () => {
     // Spec §4 makes the package resolver the **primary** enforcement and the
@@ -80,7 +86,7 @@ describe('acceptance criterion 8 — the boundary preset rejects all three', () 
         message: "Unable to resolve path to module '@app/auth/src/contract'.",
       },
     ]);
-  });
+  }, ESLINT_ACCEPTANCE_TIMEOUT_MS);
 
   it('B2: a value export from a contract beyond the allowlist is an error', async () => {
     const results = await lintFixture(FIXTURE);
@@ -99,7 +105,7 @@ describe('acceptance criterion 8 — the boundary preset rejects all three', () 
       { file: 'contract.ts', line: 19, message: expected('DEFAULT_SESSION') },
       { file: 'contract.ts', line: 21, message: expected('normalize') },
     ]);
-  });
+  }, ESLINT_ACCEPTANCE_TIMEOUT_MS);
 
   it('B3/C6: override: true inside a module package is an error', async () => {
     const results = await lintFixture(FIXTURE);
@@ -123,7 +129,7 @@ describe('acceptance criterion 8 — the boundary preset rejects all three', () 
           'the provider being overridden instead.',
       },
     ]);
-  });
+  }, ESLINT_ACCEPTANCE_TIMEOUT_MS);
 
   it('the real workspace is clean under the same config — the false-positive control', async () => {
     // Three rules that reject correct code are worth nothing. The demo's own
@@ -152,5 +158,5 @@ describe('acceptance criterion 8 — the boundary preset rejects all three', () 
         messages: [],
       });
     }
-  });
+  }, ESLINT_ACCEPTANCE_TIMEOUT_MS);
 });

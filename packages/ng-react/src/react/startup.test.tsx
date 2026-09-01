@@ -195,7 +195,7 @@ describe('<KernelStartupGate> / useKernelStartup (A3, F2)', () => {
 
 // --- A3's actual condition — the test most likely to be "fixed" into a bug ---
 
-describe('A3: the gate waits for eager *critical* modules and for nothing else', () => {
+describe('A3: the gate waits for startup-critical modules and for nothing else', () => {
   it('A3: opens while a quarantined eager non-critical module is still activating', async () => {
     const authInit = deferred<void>();
     const debugInit = deferred<void>();
@@ -262,14 +262,11 @@ describe('A3: the gate waits for eager *critical* modules and for nothing else',
     expect(kernel.status(DebugModule)).toBe('failed');
   });
 
-  it("#61: with no eager critical module the gate opens immediately, and dev-warns that it gates nothing", async () => {
+  it('#61: with no startup-critical module the gate opens immediately and warns', async () => {
     // **Pinning a behaviour, not endorsing it.** Issue #61 finding 2: the
-    // pending set is built from `load === 'eager' && critical`, so with none
-    // matching `whenStartupComplete()` resolves straight away — here while both
-    // modules are still `activating`. Whether that is right is a *kernel*
-    // question and belongs to #61; what this file owes is an honest, pinned
-    // record of what the gate does today plus the dev warning that stops it
-    // being silent.
+    // With no critical module in an eager module's activation closure,
+    // `whenStartupComplete()` resolves straight away — here while both modules
+    // are still activating. The warning keeps that deliberate behavior visible.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const authInit = deferred<void>();
     const kernel = kernelWith({
@@ -291,9 +288,7 @@ describe('A3: the gate waits for eager *critical* modules and for nothing else',
     expect(kernel.status(AuthModule)).toBe('activating');
     expect(kernel.status(DebugModule)).toBe('registered');
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toContain(
-      "no module is both load: 'eager' and critical: true",
-    );
+    expect(warn.mock.calls[0]?.[0]).toContain('no critical module is in the startup activation closure');
 
     authInit.resolve();
     await waitFor(() => {
@@ -316,6 +311,32 @@ describe('A3: the gate waits for eager *critical* modules and for nothing else',
       expect(screen.getByTestId('app')).toBeDefined();
     });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('#61: no warning when an eager module pulls a lazy critical dependency into startup', async () => {
+    const LazyCriticalModule = moduleRef('lazy-critical');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const init = deferred<void>();
+    const kernel = kernelWith({
+      modules: [
+        defineModule({ id: LazyCriticalModule, critical: true, init: () => init.promise }),
+        defineModule({ id: AuthModule, dependsOn: [LazyCriticalModule], load: 'eager' }),
+      ],
+    });
+
+    render(
+      <Tree kernel={kernel}>
+        <Gate />
+      </Tree>,
+    );
+
+    expect(screen.getByTestId('splash')).toBeDefined();
+    expect(warn).not.toHaveBeenCalled();
+
+    init.resolve();
+    await waitFor(() => {
+      expect(screen.getByTestId('app')).toBeDefined();
+    });
   });
 });
 

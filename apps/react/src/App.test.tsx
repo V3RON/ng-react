@@ -53,6 +53,14 @@ async function waitForStatus(
 }
 
 describe('demo app', () => {
+  it('#70: installs a non-throwing fatal handler because AppRoot renders failures', () => {
+    const { kernel } = createAppKernel(undefined);
+    const onFatal = (kernel as unknown as { readonly onFatal?: unknown }).onFatal;
+
+    expect(onFatal).toEqual(expect.any(Function));
+    expect(() => (onFatal as (error: unknown) => void)(new Error('startup failed'))).not.toThrow();
+  });
+
   it('criterion 1: kernel.activate(OrdersModule) transitively activates payments', async () => {
     const { kernel, log } = createAppKernel(undefined);
     await kernel.whenStartupComplete();
@@ -121,7 +129,7 @@ describe('demo app', () => {
     // **The startup half, asserted first and positively.** `debug` failing is
     // easy to show; "without affecting startup" is the clause that a passing
     // test can silently skip. `whenStartupComplete` resolves only when every
-    // eager *critical* module is `ready` and rejects if one cannot be (F2), so
+    // startup-critical module is `ready` and rejects if one cannot be (F2), so
     // awaiting it here is the machine-checked form of "the app started".
     await expect(kernel.whenStartupComplete()).resolves.toBeUndefined();
     expect(kernel.status(AuthModule)).toBe('ready');

@@ -14,8 +14,8 @@ import { AppNavigation } from './drawer';
 import { theme } from './theme';
 
 /**
- * Renders the app once the kernel's eager critical modules are ready, or the
- * failure screen if one of them could not be, and hides the splash screen
+ * Renders the app once the kernel's startup-critical modules are ready, or
+ * the failure screen if one of them could not be, and hides the splash screen
  * when startup settles either way.
  *
  * Renders nothing while startup is still running: the native splash screen is
@@ -59,7 +59,7 @@ export function StartupGate(props: {
 }
 
 /**
- * Shown instead of the app when an eager critical module could not start.
+ * Shown instead of the app when a startup-critical module could not start.
  *
  * The kernel's own error is rendered verbatim: it names the module and the
  * phase. There is no retry control, because a kernel whose critical startup
@@ -71,7 +71,7 @@ function StartupFailed(props: { readonly error: unknown }): ReactElement {
     <View style={styles.screen}>
       <Text style={theme.h1}>Startup failed</Text>
       <Text style={theme.note}>
-        F2: an eager critical module could not become ready, so
+        F2: a critical module in the startup activation closure could not become ready, so
         kernel.whenStartupComplete() rejected and the app was never rendered. The splash screen is
         gone rather than stuck — a gate that handled only the success path would still be showing
         it.

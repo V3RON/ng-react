@@ -13,8 +13,8 @@
 // for why that boundary is where it is.
 //
 // **Every wait settles on `kernel.status`, never on a timer.** `HANDOFF.md`
-// §5.13 and #52's addendum to it: `whenStartupComplete()` gates on eager
-// *critical* modules only, and a `setTimeout(0)` is *sometimes* long enough
+// §5.13 and #52's addendum to it: `whenStartupComplete()` gates on
+// startup-critical modules only, and a `setTimeout(0)` is *sometimes* long enough
 // for a transitive activation pair to land — when it is not, the C5 growth
 // notifications interleave with a later `deactivate` and the resulting
 // sequence reads like a kernel ordering bug rather than a test race.
@@ -89,6 +89,14 @@ function recordCollection<T extends { readonly id: string }>(
 }
 
 describe('apps/native composition root', () => {
+  it('#70: installs a non-throwing fatal handler because StartupGate renders failures', () => {
+    const { kernel } = createAppKernel();
+    const onFatal = (kernel as unknown as { readonly onFatal?: unknown }).onFatal;
+
+    expect(onFatal).toEqual(expect.any(Function));
+    expect(() => (onFatal as (error: unknown) => void)(new Error('startup failed'))).not.toThrow();
+  });
+
   it('registers the same six module packages the web root does, plus this host’s own shell', () => {
     // The claim issue #53 exists to test, expressed as an assertion: the
     // feature modules are reused, not re-declared. `shell` is the one
@@ -104,18 +112,16 @@ describe('apps/native composition root', () => {
     ]);
   });
 
-  it('ADR-5/#42: the native HmrAdapter is { enabled: true } with invalidate omitted', () => {
+  it('ADR-5: the native HmrAdapter is {} because Metro cannot invalidate', () => {
     // `packages/ng-react/src/hmr/adapter.ts` predicts exactly this object for
-    // Metro — "it is `{ enabled: true }` with the optional member omitted,
-    // exactly the case `createNoopHmrAdapter` keeps exercised" — and this is
-    // the first time a real Metro host has supplied one.
+    // Metro has no invalidation API, so it supplies the same `{}` shape as
+    // the noop adapter. The optional member is the sole capability signal.
     //
     // Asserted with `Object.keys`, not with `adapter.invalidate === undefined`:
     // a no-op `invalidate` added by a later tidy-up would satisfy the second
     // and would silently stop exercising the absent-member call site
     // `this.hmr.invalidate?.(…)` guards.
-    expect(Object.keys(nativeHmrAdapter)).toEqual(['enabled']);
-    expect(nativeHmrAdapter.enabled).toBe(true);
+    expect(Object.keys(nativeHmrAdapter)).toEqual([]);
   });
 
   it('H2: every module package is armed with this kernel through acceptHotUpdate', () => {
@@ -157,7 +163,7 @@ describe('apps/native composition root', () => {
     const { kernel } = createAppKernel();
     const menu = recordCollection(kernel, MenuEntryToken);
 
-    // `whenStartupComplete()` gates on eager **critical** modules only
+    // `whenStartupComplete()` gates on startup-critical modules only
     // (A3), so `dashboard`, `nav` and `shell` are settled on individually.
     await kernel.whenStartupComplete();
     await waitForStatus(kernel, DashboardModule, 'ready');
