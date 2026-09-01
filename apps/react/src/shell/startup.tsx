@@ -43,16 +43,16 @@ function StartupSplash(): ReactElement {
     <main aria-busy="true" data-testid="startup-splash">
       <h1>ng-react kernel</h1>
       <p className="note">
-        Starting the kernel — waiting for the eager <strong>critical</strong> modules (A3). Eager{' '}
-        <em>non-critical</em> modules are deliberately not waited for: <code>debug</code> fails on
-        purpose and must not be able to hold this screen up.
+        Starting the kernel — waiting for the <strong>critical</strong> modules in the startup
+        activation closure (A3). <em>Non-critical</em> modules are deliberately not waited for:{' '}
+        <code>debug</code> fails on purpose and must not be able to hold this screen up.
       </p>
     </main>
   );
 }
 
 /**
- * Shown instead of the app when an eager critical module could not start.
+ * Shown instead of the app when a startup-critical module could not start.
  *
  * The kernel's own error is rendered verbatim: it names the module and the
  * phase. There is no retry control, because a kernel whose critical startup
@@ -64,7 +64,8 @@ function StartupFailed(props: { readonly error: unknown }): ReactElement {
     <main data-testid="startup-failed">
       <h1>Startup failed</h1>
       <p className="note">
-        F2: an eager <code>critical: true</code> module could not become ready, so
+        F2: a <code>critical: true</code> module in the startup activation closure could not become
+        ready, so
         <code> kernel.whenStartupComplete()</code> rejected and the app was never rendered. The
         splash is gone rather than stuck — a gate that handled only the success path would still be
         showing it.

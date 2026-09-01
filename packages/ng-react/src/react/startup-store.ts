@@ -89,25 +89,35 @@ export function createKernelStartupStore(kernel: Kernel): KernelStartupStore {
 /**
  * Warns, in dev only, when the kernel has no module for startup to wait on.
  *
- * `whenStartupComplete()` waits on modules that are both `load: 'eager'` and
- * `critical: true`. With none, it resolves immediately and anything gated on
- * it opens before a module has finished activating.
+ * `whenStartupComplete()` waits on critical modules in the activation closure
+ * of every eager module. With none, it resolves immediately and anything gated
+ * on it opens before a module has finished activating.
  */
 function warnIfNothingIsGated(kernel: Kernel): void {
   if (!IS_DEV) {
     return;
   }
-  const gated = kernel
-    .inspect()
-    .modules.filter((module) => module.load === 'eager' && module.critical);
-  if (gated.length > 0) {
+  const modules = kernel.inspect().modules;
+  const byId = new Map(modules.map((module) => [module.id, module]));
+  const startupModuleIds = new Set(
+    modules.filter((module) => module.load === 'eager').map((module) => module.id),
+  );
+  const pending = [...startupModuleIds];
+  for (const moduleId of pending) {
+    for (const dependencyId of byId.get(moduleId)?.dependsOn ?? []) {
+      if (!startupModuleIds.has(dependencyId)) {
+        startupModuleIds.add(dependencyId);
+        pending.push(dependencyId);
+      }
+    }
+  }
+  if (modules.some((module) => module.critical && startupModuleIds.has(module.id))) {
     return;
   }
   console.warn(
-    "useKernelStartup(): no module is both load: 'eager' and critical: true, so " +
+    'useKernelStartup(): no critical module is in the startup activation closure, so ' +
       'kernel.whenStartupComplete() resolves immediately and this gate opens before any module ' +
       'has finished activating. Mark the modules first paint depends on critical: true. ' +
-      'Startup deliberately does not wait for eager non-critical modules, so a module that ' +
-      'must be ready first has to say so on its descriptor.',
+      'A critical lazy dependency pulled in by an eager module also participates in the gate.',
   );
 }

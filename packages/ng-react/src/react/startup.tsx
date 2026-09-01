@@ -11,13 +11,13 @@ import type { KernelStartupState } from './startup-store';
  * `<AppKernel>`, re-rendering when it settles: `pending`, then `ready` or
  * `failed`.
  *
- * Startup waits for the modules that are both `load: 'eager'` and
- * `critical: true`. An eager module that is not critical may still be
- * activating, or already quarantined, when this reports `ready`; to put a
- * module inside the gate, mark it `critical: true` on its descriptor.
+ * Startup waits for critical modules in every eager module's transitive
+ * activation closure. A non-critical module may still be activating, or
+ * already quarantined, when this reports `ready`; to put a module inside the
+ * gate, mark it `critical: true` and make it part of that closure.
  *
  * `failed` carries the error that stopped startup, unwrapped. It is reached
- * whenever an eager critical module cannot become ready, so a consumer that
+ * whenever a startup-critical module cannot become ready, so a consumer that
  * handles only `ready` leaves the app on its loading screen for good.
  * Rendering this state does not suppress the kernel's default fatal rethrow.
  * If this UI is the host's intended failure surface, pass `onFatal` to
@@ -70,9 +70,8 @@ export interface KernelStartupGateProps {
 }
 
 /**
- * Renders `fallback` while the kernel's eager critical modules are starting,
- * `children` once they are ready, and `renderFailure(error)` if one of them
- * could not be.
+ * Renders `fallback` while the kernel's startup-critical modules are starting,
+ * `children` once they are ready, and `renderFailure(error)` if one cannot be.
  *
  * Reach for `useKernelStartup()` instead when startup settling has to *do*
  * something — hide a native splash screen, log, report — rather than only

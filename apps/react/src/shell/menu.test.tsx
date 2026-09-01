@@ -22,7 +22,7 @@ import { createAppKernel } from '../composition-root';
 async function mountApp(): Promise<Kernel> {
   const { kernel, log } = createAppKernel(undefined);
   await kernel.whenStartupComplete();
-  // A3 gates `whenStartupComplete` on eager **critical** modules only, and
+  // A3 gates `whenStartupComplete` on startup-critical modules only, and
   // `nav` is non-critical — awaiting the former and then asserting on the
   // latter is the racy pattern of issue #51. `activate` is idempotent and
   // single-flight.

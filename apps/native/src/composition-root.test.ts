@@ -13,8 +13,8 @@
 // for why that boundary is where it is.
 //
 // **Every wait settles on `kernel.status`, never on a timer.** `HANDOFF.md`
-// §5.13 and #52's addendum to it: `whenStartupComplete()` gates on eager
-// *critical* modules only, and a `setTimeout(0)` is *sometimes* long enough
+// §5.13 and #52's addendum to it: `whenStartupComplete()` gates on
+// startup-critical modules only, and a `setTimeout(0)` is *sometimes* long enough
 // for a transitive activation pair to land — when it is not, the C5 growth
 // notifications interleave with a later `deactivate` and the resulting
 // sequence reads like a kernel ordering bug rather than a test race.
@@ -163,7 +163,7 @@ describe('apps/native composition root', () => {
     const { kernel } = createAppKernel();
     const menu = recordCollection(kernel, MenuEntryToken);
 
-    // `whenStartupComplete()` gates on eager **critical** modules only
+    // `whenStartupComplete()` gates on startup-critical modules only
     // (A3), so `dashboard`, `nav` and `shell` are settled on individually.
     await kernel.whenStartupComplete();
     await waitForStatus(kernel, DashboardModule, 'ready');

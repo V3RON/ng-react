@@ -60,7 +60,8 @@ export interface TestKernelOptions {
    */
   readonly dev?: boolean;
   /**
-   * Called when a `critical` eager module fails startup.
+   * Called when a `critical` module fails during startup activation, including
+   * a lazy dependency pulled in by an eager module.
    *
    * Defaults to a no-op, unlike `createKernel`, whose default rethrows from a
    * fresh macrotask — in a test runner that throw lands in an unrelated test

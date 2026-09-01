@@ -946,7 +946,7 @@ describe('kernel activation — spec §6 (A1, A2, A3)', () => {
     expect(kernel.status(PaymentsModule)).toBe('ready');
   });
 
-  it('A3 hook: whenStartupComplete resolves once every eager critical module is ready', async () => {
+  it('A3 hook: whenStartupComplete resolves once every startup-critical module is ready', async () => {
     const kernel = createKernel({
       modules: [
         defineModule({ id: AuthModule, load: 'eager', critical: true }),
@@ -958,7 +958,7 @@ describe('kernel activation — spec §6 (A1, A2, A3)', () => {
     expect(kernel.status(AuthModule)).toBe('ready');
   });
 
-  it('A3 hook: whenStartupComplete resolves immediately when no module is eager and critical', async () => {
+  it('A3 hook: whenStartupComplete resolves immediately with no startup-critical module', async () => {
     const kernel = createKernel({ modules: [defineModule({ id: OrdersModule })] });
     await expect(kernel.whenStartupComplete()).resolves.toBeUndefined();
   });
@@ -987,6 +987,65 @@ describe('kernel activation — spec §6 (A1, A2, A3)', () => {
       "Activating module 'auth' failed in its init(ctx): no keychain",
     );
     expect(kernel.status(AuthModule)).toBe('failed');
+  });
+
+  it('F2: a lazy critical dependency pulled into startup rejects with its own failure', async () => {
+    const LazyCriticalModule = moduleRef('lazy-critical');
+    const onFatal = vi.fn();
+    const kernel = createKernel({
+      onFatal,
+      modules: [
+        defineModule({
+          id: LazyCriticalModule,
+          critical: true,
+          init: () => {
+            throw new Error('critical dependency unavailable');
+          },
+        }),
+        defineModule({ id: AuthModule, dependsOn: [LazyCriticalModule], load: 'eager' }),
+      ],
+    });
+
+    const startup = kernel.whenStartupComplete();
+    await expect(startup).rejects.toThrow(
+      "Activating module 'lazy-critical' failed in its init(ctx): critical dependency unavailable",
+    );
+    await flushMicrotasks();
+
+    expect(onFatal).toHaveBeenCalledTimes(1);
+    const [fatal] = onFatal.mock.calls[0] as [Error];
+    await expect(startup).rejects.toBe(fatal);
+    expect(kernel.status(LazyCriticalModule)).toBe('failed');
+    expect(kernel.status(AuthModule)).toBe('failed');
+  });
+
+  it('A3: a lazy critical dependency pulled into startup keeps the gate pending until ready', async () => {
+    const LazyCriticalModule = moduleRef('lazy-critical');
+    let releaseInit!: () => void;
+    const initBlocked = new Promise<void>((resolve) => {
+      releaseInit = resolve;
+    });
+    const kernel = createKernel({
+      modules: [
+        defineModule({ id: LazyCriticalModule, critical: true, init: () => initBlocked }),
+        defineModule({ id: AuthModule, dependsOn: [LazyCriticalModule], load: 'eager' }),
+      ],
+    });
+
+    const startup = kernel.whenStartupComplete();
+    let startupSettled = false;
+    void startup.then(() => {
+      startupSettled = true;
+    });
+    await flushMicrotasks();
+
+    expect(kernel.status(LazyCriticalModule)).toBe('activating');
+    expect(startupSettled).toBe(false);
+
+    releaseInit();
+    await expect(startup).resolves.toBeUndefined();
+    expect(kernel.status(LazyCriticalModule)).toBe('ready');
+    expect(kernel.status(AuthModule)).toBe('ready');
   });
 
   it('F3/F1: a non-critical eager failure does not stop the startup pass', async () => {
@@ -1999,7 +2058,7 @@ describe('kernel failure policy — F1, F2', () => {
       ],
     });
 
-    // A3: with no eager *critical* module, `whenStartupComplete` resolves
+    // A3: with no startup-critical module, `whenStartupComplete` resolves
     // immediately, so it is not a barrier for the eager pass — draining the
     // microtask queue is.
     await kernel.whenStartupComplete();
