@@ -50,6 +50,7 @@ import type { RouteConfig } from '@app/nav/contract';
 import { OrdersModule } from '@app/orders/contract';
 import { ownedInDisplayOrder, ownersOf } from './ordering';
 import { renderTrace } from './render-trace';
+import { shouldActivateFromRoute } from './route-activation';
 import { theme } from './theme';
 
 /**
@@ -93,9 +94,7 @@ function ModuleRoute(props: {
   useEffect(() => {
     // **A2**: `activate` is idempotent and single-flight, so this is safe from
     // an effect that may run twice and safe for a module already `activating`.
-    // `disposed` is included because logout (**A4**) leaves a routed-to module
-    // exactly there, and a route that could never come back would be dead.
-    if (status === 'registered' || status === 'disposed') {
+    if (shouldActivateFromRoute(status)) {
       // The failure is retained on the module (**F1**) and rendered below;
       // rethrowing into an unhandled rejection would add nothing.
       void kernel.activate(props.moduleRef).catch(() => {});
