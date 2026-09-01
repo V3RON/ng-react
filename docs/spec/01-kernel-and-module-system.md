@@ -317,6 +317,14 @@ that §16 asks for.
 
 Discrepancies found in this document and how they were resolved:
 
+- **§10 F2 / React failure UI — rendering does not replace host fatal policy.** The
+  kernel remains React-free (ADR-6): it cannot know that `useKernelStartup()` or
+  `<KernelStartupGate>` is rendering the rejected startup promise. A host that wants that
+  UI to be the only visible failure surface passes `onFatal` at the composition root; a
+  no-op is valid. Without it, the default macrotask rethrow still reaches React Native's
+  LogBox or the browser overlay and may cover the app-owned screen. Both demos model the
+  explicit handler. See issue #70.
+
 - **§5.2 field count** — the prose said "exactly six fields" while the worked example
   below it lists seven (`id`, `dependsOn`, `load`, `critical`, `providers`, `init`,
   `dispose`). Revision 2 removed `capabilities` and `contributions` without updating the

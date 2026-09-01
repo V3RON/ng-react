@@ -253,6 +253,14 @@ A3 gates it on eager **critical** modules only. A test that awaits it and then a
 non-critical module's post-failure state is racy, and will pass almost always — which is worse
 than failing. Use `waitForStatus`. This is #51, and the pattern is easy to reintroduce.
 
+### 5.14 A rendered startup failure does not suppress the default fatal rethrow
+
+`useKernelStartup()` and `<KernelStartupGate>` observe `whenStartupComplete()`; they do not alter
+the kernel's host-fatal policy. If an app renders its own failure screen, its composition root must
+pass `onFatal` (a no-op is valid) or React Native LogBox / the browser overlay can cover that screen.
+The kernel cannot infer that a React gate exists without violating ADR-6. Both demo roots pin the
+explicit handler in tests and issue #70 records the on-device overlap check.
+
 ---
 
 ## 6. Known gaps and honest partials
