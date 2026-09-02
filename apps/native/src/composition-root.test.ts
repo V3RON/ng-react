@@ -124,40 +124,11 @@ describe('apps/native composition root', () => {
     expect(Object.keys(nativeHmrAdapter)).toEqual([]);
   });
 
-  it('H2: every module package is armed with this kernel through acceptHotUpdate', () => {
-    // Without this test, deleting one of the six `acceptHotUpdate` lines would
-    // break HMR for that module on any host that supplies a hot context, and
-    // nothing in the workspace would notice — a rule documented and not
-    // enforced (principle 4).
-    const armed: string[] = [];
-    const replaced: string[] = [];
-    const callbacks = new Map<string, (next?: unknown) => void>();
-
-    const { kernel } = createAppKernel((moduleId) => ({
-      accept: (callback) => {
-        armed.push(moduleId);
-        callbacks.set(moduleId, callback);
-      },
-    }));
-
-    // `nav` is armed like any other module package — criterion 10's PoC
-    // navigation module has no privileges, and that includes no exemption from
-    // H2. `shell` is absent because it is app source rather than a module
-    // package; see the note in `composition-root.ts`.
-    expect(armed).toEqual(['auth', 'debug', 'payments', 'orders', 'nav', 'dashboard']);
-
-    // **Armed with the *kernel*, not merely armed.** Firing a module's callback
-    // with a replacement descriptor has to reach *this* kernel's `hotReplace`.
-    // A root that passed the wrong kernel — or a stale one from a previous
-    // `createAppKernel` — would pass the assertion above and fail this one.
-    const original = kernel.hotReplace.bind(kernel);
-    kernel.hotReplace = async (ref, next) => {
-      replaced.push(ref.id);
-      await original(ref, next);
-    };
-    callbacks.get('payments')?.({ module: appModules[2] });
-    expect(replaced).toEqual(['payments']);
-  });
+  // Module-level HMR is not wired here at all any more: it is provided by
+  // the Metro Babel plugin (`packages/babel-plugin`), which injects the
+  // `module.hot.accept` wiring into each module's own compiled file, not by
+  // any per-module call this composition root makes. See that package's
+  // tests for the coverage this file used to carry.
 
   it('C5: the drawer’s menu collection grows as modules activate — as a sequence, not a membership', async () => {
     const { kernel } = createAppKernel();

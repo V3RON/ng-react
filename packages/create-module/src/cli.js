@@ -20,8 +20,10 @@ const USAGE = `Usage: pnpm create-module <id> [options]
 
 Emits a module package carrying every blessed pattern in spec 01 (§13 B4):
 the §4 exports map, the contract/module split, ADR-7 thunks, C4/C5/C7/H3
-providers, an L2 lifecycle with no hand-written dispose, the H2 hot block,
-and an R4 createTestKernel test.
+providers, an L2 lifecycle with no hand-written dispose, and an R4
+createTestKernel test. The emitted module.ts carries no HMR code of its own —
+hot updates for it are wired by the bundler plugins (@ng-react/vite-plugin
+for Vite, the Metro Babel plugin for React Native), not by generated code.
 
 Options:
   --scope <scope>        npm scope for the package name (default: @app)
@@ -35,9 +37,8 @@ Options:
 After generating, run \`pnpm install\` so the new package joins the workspace,
 then wire it into the composition root:
 
-  import { module as exampleModule, acceptHotUpdate } from '@app/example/module';
+  import { module as exampleModule } from '@app/example/module';
   const kernel = createKernel({ modules: [exampleModule] });
-  acceptHotUpdate(kernel);   // H2 — see the generated src/module.ts
 `;
 
 /** @typedef {{ readonly code: number, readonly stdout: string, readonly stderr: string }} RunResult */
@@ -167,7 +168,6 @@ function nextSteps(generated) {
     'Next:',
     '  1. pnpm install                 # the package joins the workspace and links @ng-react/kernel',
     `  2. add ${generated.packageName}/module to the composition root's module list`,
-    `  3. call acceptHotUpdate(kernel) there too — H2's hot block needs the kernel handed to it`,
-    '  4. pnpm verify',
+    '  3. pnpm verify',
   ];
 }

@@ -1,0 +1,20 @@
+{
+  "name": "@ng-react/vite-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "description": "Feasibility proof: gives ng-react modules Vite HMR out of the box, with no hand-written HMR code in module files and no per-module wiring in the composition root.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit --pretty"
+  },
+  "devDependencies": {
+    "@ng-react/eslint-config-modules": "workspace:*",
+    "vite": "^8.2.2"
+  }
+}

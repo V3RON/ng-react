@@ -10,10 +10,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { createTestKernel, evaluationLog } from '@ng-react/kernel';
-import type { Kernel, ModuleDescriptor, ModuleRef } from '@ng-react/kernel';
 import { NavigatorToken, NavModule, RouteConfigToken, RouterToken } from './contract';
-import { acceptHotUpdate, module } from './module';
-import type { ModuleHotContext } from './module';
+import { module } from './module';
 
 describe('nav module', () => {
   it('D1 / criterion 9: nothing is evaluated until activation, and there is no init', async () => {
@@ -103,76 +101,5 @@ describe('nav module', () => {
 
     expect(kernel.errors).toEqual([]);
     expect(kernel.leaks().balanced).toBe(true);
-  });
-
-  // **H2**: the hot block, executed rather than read — the same three
-  // branches, and the same rationale, as every generated module's test. The
-  // navigation module hot-replaces exactly like a feature module; that it is
-  // *ordinary* in this respect too is part of criterion 10.
-  describe('H2: acceptHotUpdate', () => {
-    /** A `Kernel` whose `hotReplace` records instead of running. */
-    function recordingKernel(into: { ref: string; next: string | undefined }[]): Kernel {
-      const kernel = createTestKernel({ modules: [] });
-      return {
-        ...kernel,
-        hotReplace: async (ref: ModuleRef, next?: ModuleDescriptor) => {
-          into.push({ ref: ref.id, next: next?.id.id });
-        },
-      };
-    }
-
-    /** A hot context that captures the callback the module registers. */
-    function fakeHost(): { hot: ModuleHotContext; fire: (next?: unknown) => void } {
-      let accepted: ((next?: unknown) => void) | undefined;
-      return {
-        hot: {
-          accept: (callback) => {
-            accepted = callback;
-          },
-        },
-        fire: (next) => {
-          if (accepted === undefined) {
-            throw new Error('acceptHotUpdate registered no callback');
-          }
-          accepted(next);
-        },
-      };
-    }
-
-    it('with no hot context (a production build, and React Native today) it is a no-op', () => {
-      const replaced: { ref: string; next: string | undefined }[] = [];
-      expect(() => acceptHotUpdate(recordingKernel(replaced))).not.toThrow();
-      expect(replaced).toEqual([]);
-    });
-
-    it('an update carrying no descriptor leaves the old one in force', () => {
-      const replaced: { ref: string; next: string | undefined }[] = [];
-      const host = fakeHost();
-      acceptHotUpdate(recordingKernel(replaced), host.hot);
-
-      host.fire(undefined);
-      host.fire({});
-
-      expect(replaced).toEqual([]);
-    });
-
-    it('an update carrying a descriptor calls hotReplace and re-arms the fresh copy', () => {
-      const replaced: { ref: string; next: string | undefined }[] = [];
-      const kernel = recordingKernel(replaced);
-      const host = fakeHost();
-      acceptHotUpdate(kernel, host.hot);
-
-      const rearmed: { kernel: Kernel; hot: ModuleHotContext | undefined }[] = [];
-      host.fire({
-        module,
-        acceptHotUpdate: (nextKernel: Kernel, nextHot?: ModuleHotContext) => {
-          rearmed.push({ kernel: nextKernel, hot: nextHot });
-        },
-      });
-
-      expect(replaced).toEqual([{ ref: 'nav', next: 'nav' }]);
-      // Without this, the *second* edit falls through to a full reload.
-      expect(rearmed).toEqual([{ kernel, hot: host.hot }]);
-    });
   });
 });

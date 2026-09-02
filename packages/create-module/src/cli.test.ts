@@ -51,13 +51,11 @@ describe('run', () => {
       'create-module: wrote 7 files to packages/demo-thing (@app/demo-thing)',
     );
     expect(fs.readFileSync(path.join(cwd, 'packages/demo-thing/src/module.ts'), 'utf8')).toContain(
-      'export function acceptHotUpdate(',
+      "export const module = defineModule({",
     );
-    // The next steps name the H2 handshake, because a generated hot block
-    // that is never handed a kernel is documentation, not behaviour.
-    expect(result.stdout).toContain(
-      "  3. call acceptHotUpdate(kernel) there too — H2's hot block needs the kernel handed to it",
-    );
+    // The generated module carries no hand-written HMR code; the next steps
+    // name only what a generated module actually needs.
+    expect(result.stdout).toContain('  3. pnpm verify');
   });
 
   it('refuses to overwrite an existing module directory', () => {

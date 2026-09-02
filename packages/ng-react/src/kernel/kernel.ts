@@ -12,6 +12,7 @@ import {
 import { createNoopHmrAdapter } from '../hmr/adapter';
 import type { HmrAdapter } from '../hmr/adapter';
 import { EpochStore } from '../hmr/epoch';
+import { registerModuleDescriptor, registerModuleDescriptors } from '../hmr/hot-module';
 import { LeakInvariantCheck } from '../hmr/leak-check';
 import { ResolutionGraph } from '../hmr/resolution-graph';
 import type { ResolutionEdge } from '../hmr/resolution-graph';
@@ -477,6 +478,15 @@ export class KernelImpl implements Kernel {
       }
       sourceById.set(id, source);
       this.descriptors.set(id, descriptor);
+    }
+
+    // **The bundler-plugin HMR registry (see `hmr/hot-module.ts`).**
+    // Dev-only, and populated by descriptor *identity* — a production
+    // build registers nothing, and two kernels registering a module with
+    // the same id string still never see each other's descriptors, because
+    // the registry is never keyed by that string.
+    if (this.dev) {
+      registerModuleDescriptors(this, this.descriptors.values());
     }
 
     this.graph = buildGraphOf(this.descriptors.values());
@@ -1127,6 +1137,13 @@ export class KernelImpl implements Kernel {
   /** Applies an already-validated replacement. Cannot fail. */
   private commitReplacement(moduleId: string, replacement: ValidatedReplacement): void {
     this.descriptors.set(moduleId, replacement.descriptor);
+    // The registry keeps covering this module id's descriptor across a
+    // *chain* of edits: the replacement's own re-evaluated file closes over
+    // this exact object as its `prevDescriptor` on the *next* edit, and only
+    // a registered descriptor is found (`hmr/hot-module.ts`).
+    if (this.dev) {
+      registerModuleDescriptor(this, replacement.descriptor);
+    }
     if (replacement.graph !== undefined) {
       this.graph = replacement.graph;
       this.refreshKnownModules();

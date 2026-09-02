@@ -15,8 +15,9 @@ import { createAppKernel } from './composition-root';
 const container = document.getElementById('root');
 if (!container) throw new Error('Root container #root not found');
 
-// `import.meta.hot` is read inside `createAppKernel`'s default parameter, and
-// inside each module's own `acceptHotUpdate` — never here.
+// `import.meta.hot` is read inside `createAppKernel`'s default parameter —
+// never here. Module-level HMR is wired at build time by
+// `@ng-react/vite-plugin`, not by anything this file or a module does.
 const { kernel, log } = createAppKernel();
 
 // The startup gate lives in `<AppRoot>`, with `<AppKernel>` and `<App>`, so

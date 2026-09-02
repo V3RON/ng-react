@@ -61,6 +61,9 @@ export type { HmrAdapter, ViteHotContext } from './hmr/adapter';
 export { createViteHmrAdapter, createNoopHmrAdapter } from './hmr/adapter';
 export type { Store } from './hmr/persistent';
 export { defineStore } from './hmr/persistent';
+// The registry a bundler plugin drives for module-level HMR with no
+// hand-written code in the module file — see `hmr/hot-module.ts`.
+export { hotReplaceModule } from './hmr/hot-module';
 
 export { ErrorSinkToken } from './kernel/failure';
 

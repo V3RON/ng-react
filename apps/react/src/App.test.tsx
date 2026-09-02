@@ -6,10 +6,11 @@
 // wrong, which is precisely the thing criterion 1 exists to check.
 //
 // `createAppKernel(undefined)` passes no hot context, so `createViteHmrAdapter`
-// yields the noop adapter and each module's `acceptHotUpdate` no-ops on its
-// `undefined` guard. HMR behaviour itself is covered at the unit level in the
-// kernel package; what is asserted here is that the wiring exists and is
-// harmless without a bundler.
+// yields the noop adapter. Module-level HMR itself is not wired by this
+// composition root at all — it comes from `@ng-react/vite-plugin`
+// (`apps/react/vite.config.ts`), so a bundler-free render here says nothing
+// about it; see `apps/react/scripts/hmr-e2e.mjs` for the real end-to-end
+// proof.
 
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -20,7 +21,7 @@ import { DebugModule } from '@app/debug/contract';
 import { OrdersModule } from '@app/orders/contract';
 import { PaymentsModule } from '@app/payments/contract';
 import { App } from './App';
-import { appModules, createAppKernel } from './composition-root';
+import { createAppKernel } from './composition-root';
 import { sequenceOf } from './lifecycle-log';
 
 /** `debug`'s deliberate failure, duplicated rather than imported — see `debug/src/lifecycle.ts`. */
@@ -195,45 +196,6 @@ describe('demo app', () => {
     // own `deactivate`, and lands after both.
     await kernel.deactivate(PaymentsModule);
     expect(sequenceOf(log, 'disposed')).toEqual(['orders', 'auth', 'payments']);
-  });
-
-  it('H2: the composition root arms every module\'s hot block with the kernel', async () => {
-    // **The obligation the kernel cannot discharge for itself.** `accept` is
-    // called by the module, not the kernel (§17), and a module may not import
-    // the composition root (B1) — so if the root forgets one
-    // `acceptHotUpdate(kernel)` call, that module simply never hot-replaces
-    // and every edit to it falls through to a full page reload. Nothing else
-    // in the workspace would notice, which is exactly the "documented but not
-    // enforced" shape principle 4 rejects.
-    const armed: string[] = [];
-    const replaced: string[] = [];
-    const callbacks = new Map<string, (next?: unknown) => void>();
-
-    const { kernel } = createAppKernel(undefined, (moduleId) => ({
-      accept: (callback) => {
-        armed.push(moduleId);
-        callbacks.set(moduleId, callback);
-      },
-    }));
-    await kernel.whenStartupComplete();
-
-    // `nav` is armed like any other module package — criterion 10's PoC
-    // navigation module has no privileges, and that includes no exemption
-    // from H2. `shell` is absent because it is app source rather than a
-    // module package; see the note in `composition-root.ts`.
-    expect(armed).toEqual(['auth', 'debug', 'payments', 'orders', 'nav', 'dashboard']);
-
-    // Armed with the *kernel*, not merely armed: firing a module's callback
-    // with a replacement descriptor has to reach `kernel.hotReplace`. A root
-    // that passed the wrong kernel — or a stale one from a previous
-    // `createAppKernel` — would pass the assertion above and fail this.
-    const original = kernel.hotReplace.bind(kernel);
-    kernel.hotReplace = async (ref, next) => {
-      replaced.push(ref.id);
-      await original(ref, next);
-    };
-    callbacks.get('payments')?.({ module: appModules[2] });
-    expect(replaced).toEqual(['payments']);
   });
 
   it('renders the diagnostic surface with every module accounted for', async () => {
