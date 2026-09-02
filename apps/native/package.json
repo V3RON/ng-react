@@ -32,8 +32,11 @@
     "react-native-worklets": "0.10.1"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@ng-react/babel-plugin-hmr": "workspace:*",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
+    "babel-preset-expo": "^57.0.7",
     "expo-doctor": "^1.20.2",
     "typescript": "^5.9.3"
   },

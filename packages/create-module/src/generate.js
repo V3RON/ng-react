@@ -53,6 +53,11 @@ const LINE_PLACEHOLDERS = Object.freeze({
   // dependencies. See `__dependsOnDependencies__` below for why it exists.
   '"__dependsOnDependencies__": "workspace:*",': '__dependsOnDependencies__',
   '// __dependencyStubs__': '__dependencyStubs__',
+  // `ModuleDescriptor` is only referenced by the `dependencyStubs` array
+  // `__dependencyStubs__` emits, so the import that types it is dropped with
+  // it when there are no dependencies — otherwise a dependency-free generated
+  // module would fail lint on an unused import.
+  '// __moduleDescriptorImport__': '__moduleDescriptorImport__',
 });
 
 /** @typedef {{ readonly path: string, readonly contents: string }} GeneratedFile */
@@ -154,6 +159,8 @@ export function generateModule(options) {
     // task 8.1: before this, every generated module with `--depends-on`
     // emitted a test that threw on its first line.
     __dependencyStubs__: dependsOn.length === 0 ? '' : renderDependencyStubs(dependsOn, scope),
+    __moduleDescriptorImport__:
+      dependsOn.length === 0 ? '' : "import type { ModuleDescriptor } from '@ng-react/kernel';",
     // Widens the emitted test's existing `@ng-react/kernel` import rather
     // than adding a second one for the same package.
     __defineModuleImport__: dependsOn.length === 0 ? '' : 'defineModule, ',

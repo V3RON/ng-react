@@ -8,10 +8,15 @@
 // path as well as the web one, so that is enforced rather than merely stated.
 //
 // **What is deliberately identical to the web root**, because that identity is
-// the claim issue #53 exists to test: the descriptor list, the six
-// `acceptHotUpdate(kernel)` calls, and the absence of any kernel instance at
-// module scope. Six of the seven descriptors are the *same objects* the web
-// app registers, imported from the same packages, unmodified.
+// the claim issue #53 exists to test: the descriptor list and the absence of
+// any kernel instance at module scope. Six of the seven descriptors are the
+// *same objects* the web app registers, imported from the same packages,
+// unmodified. Neither root does any per-module HMR wiring: module-level hot
+// replacement is provided out of the box by a bundler plugin — Vite's for
+// the web app, a Metro Babel plugin for this one (`packages/babel-plugin`) —
+// which injects the accept wiring into each module's own file at build time.
+// See `packages/ng-react/src/hmr/hot-module.ts` for the shared mechanism both
+// plugins call into.
 //
 // **What differs, and only this:**
 //
@@ -23,19 +28,12 @@
 
 import { createKernel } from '@ng-react/kernel';
 import type { HmrAdapter, Kernel, ModuleDescriptor } from '@ng-react/kernel';
-import { acceptHotUpdate as acceptAuthHotUpdate, module as authModule } from '@app/auth/module';
-import type { ModuleHotContext } from '@app/auth/module';
-import {
-  acceptHotUpdate as acceptDashboardHotUpdate,
-  module as dashboardModule,
-} from '@app/dashboard/module';
-import { acceptHotUpdate as acceptDebugHotUpdate, module as debugModule } from '@app/debug/module';
-import { acceptHotUpdate as acceptNavHotUpdate, module as navModule } from '@app/nav/module';
-import { acceptHotUpdate as acceptOrdersHotUpdate, module as ordersModule } from '@app/orders/module';
-import {
-  acceptHotUpdate as acceptPaymentsHotUpdate,
-  module as paymentsModule,
-} from '@app/payments/module';
+import { module as authModule } from '@app/auth/module';
+import { module as dashboardModule } from '@app/dashboard/module';
+import { module as debugModule } from '@app/debug/module';
+import { module as navModule } from '@app/nav/module';
+import { module as ordersModule } from '@app/orders/module';
+import { module as paymentsModule } from '@app/payments/module';
 // **Not a package, and deliberately a relative import.** B1 governs
 // cross-*package* imports; an application's own folders are outside it, which
 // is the same latitude `apps/react` takes for its shell.
@@ -76,9 +74,6 @@ export const appModules: readonly ModuleDescriptor[] = [
   shellModule,
 ];
 
-/** Supplies a per-module hot context by id, or `undefined` to let the module read its own. */
-export type HotContextSource = (moduleId: string) => ModuleHotContext | undefined;
-
 /** What `createAppKernel` hands back. */
 export interface AppRuntime {
   readonly kernel: Kernel;
@@ -87,14 +82,12 @@ export interface AppRuntime {
 /**
  * Builds the native application kernel.
  *
- * **`hotFor` exists for the same reason the web root's does**: without it,
- * deleting one of the six `acceptHotUpdate` lines below would break HMR for
- * that module and no test in the workspace would notice — a rule documented
- * and not enforced (principle 4). Production passes nothing.
- *
- * @param hotFor per-module hot contexts; production leaves this alone.
+ * No per-module HMR wiring: see the header note above and
+ * `packages/babel-plugin` for the mechanism that gives Metro edits to these
+ * module files the same module-level hot replacement Vite gets, with no
+ * hand-written code in the module or in this file.
  */
-export function createAppKernel(hotFor: HotContextSource = () => undefined): AppRuntime {
+export function createAppKernel(): AppRuntime {
   const kernel = createKernel({
     modules: appModules,
     hmr: nativeHmrAdapter,
@@ -103,36 +96,6 @@ export function createAppKernel(hotFor: HotContextSource = () => undefined): App
     // not cover that deliberate failure screen.
     onFatal: () => {},
   });
-
-  // **H2 — and under Metro this is a documented no-op, which is the point.**
-  //
-  // Each module's hot block is `if ((import.meta as HotImportMeta).hot) { … }`.
-  // Metro has no `import.meta.hot`: it exposes a per-module CommonJS
-  // `module.hot`, which a portable ESM file cannot name — and least of all
-  // these files, whose own `module` export shadows the identifier. So
-  // `selfAccept` is `undefined` in every one of them, `acceptHotUpdate`
-  // returns immediately at its `context === undefined` guard, and editing a
-  // module under Metro does not hot-replace it.
-  //
-  // These six lines are therefore *not* dead: they are the same lines the web
-  // root runs, they are what a host supplying its own context would arm (the
-  // `hotFor` seam, and `composition-root.test.ts` proves all six through it),
-  // and issue #53 asks for the composition root to mirror the web one
-  // "including calling each module's `acceptHotUpdate(kernel)`". Deleting
-  // them because today's bundler ignores them would delete the seam that makes
-  // an RN shim possible at all. The PR body records what was measured on
-  // device rather than reasoned.
-  //
-  // One line per module and no loop, for the reason the web root gives: a
-  // loop over a table hides which module was forgotten when one is.
-  acceptAuthHotUpdate(kernel, hotFor('auth'));
-  acceptDebugHotUpdate(kernel, hotFor('debug'));
-  acceptPaymentsHotUpdate(kernel, hotFor('payments'));
-  acceptOrdersHotUpdate(kernel, hotFor('orders'));
-  acceptNavHotUpdate(kernel, hotFor('nav'));
-  acceptDashboardHotUpdate(kernel, hotFor('dashboard'));
-  // No `acceptHotUpdate` for the shell: it is app source rather than a module
-  // package, exactly as on web.
 
   return { kernel };
 }

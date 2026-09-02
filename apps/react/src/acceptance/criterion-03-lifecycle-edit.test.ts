@@ -14,11 +14,12 @@
 // was removed from `HmrAdapter` entirely (issue #42, spec §17), because Vite
 // decides self-acceptance by *lexically scanning a module's own source* for
 // `import.meta.hot.accept` — so no indirection can register it. What remains
-// on the adapter is `invalidate`. The seam an edit arrives through is each
-// module's own `acceptHotUpdate(kernel, hot?)`, and the call it makes is
-// `kernel.hotReplace(ref, nextDescriptor)`. This file drives `hotReplace`
-// directly, which is what that callback does and all that it does;
-// `packages/orders/src/module.test.ts` covers the callback itself.
+// on the adapter is `invalidate`. Today the seam an edit arrives through is
+// the code `@ng-react/vite-plugin` injects into each module's own file at
+// transform time, and its whole job is one call: `kernel.hotReplace(ref,
+// nextDescriptor)`, reached indirectly via `hotReplaceModule` (see
+// `packages/ng-react/src/hmr/hot-module.ts`). This file drives `hotReplace`
+// directly, which is what that injected call does and all that it does.
 //
 // ### Why `createTestKernel` and not the demo app
 //

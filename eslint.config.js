@@ -46,6 +46,25 @@ export default tseslint.config(
   // against today's tree; see the PR body for the real-world check.
   ...ngReactModules.configs.recommended,
   {
+    // **The HMR e2e proof script.** This repo's convention is `no-undef`
+    // with zero ambient globals — Node builtins that have an importable
+    // form (`process`, `console`, …) are imported explicitly, matching
+    // `create-module/src/cli.js`. `fetch` and `window` have no such form:
+    // `fetch` is a genuine Node 18+ global with no `node:fetch` module, and
+    // `window` here is never this script's own global — every reference to
+    // it is inside a `page.evaluate(() => { ... })` callback, source text
+    // that Playwright ships into the *browser* to run there. ESLint parses
+    // that text as ordinary Node code with no way to know it never executes
+    // as this file, so the two globals are declared for this one file
+    // rather than worked around with a cast or an inline disable at every
+    // call site.
+    name: 'ng-react/hmr-e2e-script-globals',
+    files: ['apps/react/scripts/hmr-e2e.mjs'],
+    languageOptions: {
+      globals: { fetch: 'readonly', window: 'writable' },
+    },
+  },
+  {
     // **B1/C6 — `compositionRoot` is an option, not a convention.**
     //
     // **Two entries since issue #53**, and the plural is the point: a workspace

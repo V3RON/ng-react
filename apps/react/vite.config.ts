@@ -1,8 +1,15 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { ngReactHmr } from '@ng-react/vite-plugin';
 
 export default defineConfig({
-  plugins: [react()],
+  // `ngReactHmr()` gives every `<pkg>/module.ts` module-level HMR out of the
+  // box — no hand-written hot block in any module file, no per-module
+  // `acceptHotUpdate` call here. See `packages/vite-plugin`. Order after
+  // `react()` is not load-bearing (its `transform` hook only appends to the
+  // string), but keeping the app's own JSX/Fast-Refresh transform first
+  // reads more naturally.
+  plugins: [react(), ngReactHmr()],
   // **The Vite half of issue #52 §3's platform decision.** `providers.ts`
   // imports `./screen`; this is what makes that `screen.web.tsx` rather than
   // an unresolved specifier. Metro does the equivalent for `.native.*` with no

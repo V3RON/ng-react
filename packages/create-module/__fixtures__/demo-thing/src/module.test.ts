@@ -8,15 +8,16 @@
 
 import { describe, expect, it } from 'vitest';
 import { createTestKernel, evaluationLog, provide } from '@ng-react/kernel';
-import type { Kernel, ModuleDescriptor, ModuleRef } from '@ng-react/kernel';
 import { DemoThingGatewayToken, DemoThingServiceToken, DemoThingModule } from './contract';
-import { acceptHotUpdate, module } from './module';
-import type { ModuleHotContext } from './module';
+import { module } from './module';
 
 describe('demo-thing module', () => {
   it('D1 / criterion 9: nothing is evaluated until the activation trigger, then in order', async () => {
     const kernel = createTestKernel({ modules: [module] });
     expect(kernel.status(DemoThingModule)).toBe('registered');
+    // **D2**: the descriptor never re-states its id string — it is read off
+    // the ref it was built with.
+    expect(module.id.id).toBe('demo-thing');
 
     // Registration is cheap: the descriptor's static fields are readable
     // without any implementation file having been evaluated.
@@ -75,84 +76,5 @@ describe('demo-thing module', () => {
     // **H7**: every `ctx.on`, every `ctx.effect` and every module-scoped
     // instance released by teardown.
     expect(kernel.leaks().balanced).toBe(true);
-  });
-
-  // **H2**: the hot block, executed rather than read. `ModuleHotContext` is
-  // structural for exactly this reason — a plain object literal is a valid
-  // host, so the accept callback can be captured and driven by hand, with no
-  // bundler in the path. Three branches, and each one is load-bearing: drop
-  // the guard and the first fails, drop the `hotReplace` and the third fails,
-  // drop the re-arm and the third fails too.
-  describe('H2: acceptHotUpdate', () => {
-    /** A `Kernel` whose `hotReplace` records instead of running. */
-    function recordingKernel(into: { ref: string; next: string | undefined }[]): Kernel {
-      const kernel = createTestKernel({ modules: [] });
-      return {
-        ...kernel,
-        hotReplace: async (ref: ModuleRef, next?: ModuleDescriptor) => {
-          into.push({ ref: ref.id, next: next?.id.id });
-        },
-      };
-    }
-
-    /** A hot context that captures the callback the module registers. */
-    function fakeHost(): { hot: ModuleHotContext; fire: (next?: unknown) => void } {
-      let accepted: ((next?: unknown) => void) | undefined;
-      return {
-        hot: {
-          accept: (callback) => {
-            accepted = callback;
-          },
-        },
-        fire: (next) => {
-          if (accepted === undefined) {
-            throw new Error('acceptHotUpdate registered no callback');
-          }
-          accepted(next);
-        },
-      };
-    }
-
-    it('with no hot context (a production build, and React Native today) it is a no-op', () => {
-      const replaced: { ref: string; next: string | undefined }[] = [];
-      // Also the default-parameter path: under vitest `import.meta.hot` is
-      // undefined, so the one-argument call the composition root makes lands
-      // here too. Without the guard this throws on `undefined.accept`.
-      expect(() => acceptHotUpdate(recordingKernel(replaced))).not.toThrow();
-      expect(() => acceptHotUpdate(recordingKernel(replaced), undefined)).not.toThrow();
-      expect(replaced).toEqual([]);
-    });
-
-    it('an update carrying no descriptor leaves the old one in force', () => {
-      const replaced: { ref: string; next: string | undefined }[] = [];
-      const host = fakeHost();
-      acceptHotUpdate(recordingKernel(replaced), host.hot);
-
-      // A syntax error in the edited file, or a host that passes no namespace.
-      host.fire(undefined);
-      host.fire({});
-
-      expect(replaced).toEqual([]);
-    });
-
-    it('an update carrying a descriptor calls hotReplace and re-arms the fresh copy', () => {
-      const replaced: { ref: string; next: string | undefined }[] = [];
-      const kernel = recordingKernel(replaced);
-      const host = fakeHost();
-      acceptHotUpdate(kernel, host.hot);
-
-      const rearmed: { kernel: Kernel; hot: ModuleHotContext | undefined }[] = [];
-      host.fire({
-        module,
-        acceptHotUpdate: (nextKernel: Kernel, nextHot?: ModuleHotContext) => {
-          rearmed.push({ kernel: nextKernel, hot: nextHot });
-        },
-      });
-
-      expect(replaced).toEqual([{ ref: 'demo-thing', next: 'demo-thing' }]);
-      // Without this, the *second* edit falls through to a full reload: the
-      // fresh copy never accepted, and the composition root is not re-run.
-      expect(rearmed).toEqual([{ kernel, hot: host.hot }]);
-    });
   });
 });
